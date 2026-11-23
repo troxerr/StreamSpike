@@ -4,11 +4,35 @@ import SwiftUI
 
 /// Screenshot mode for agents.
 ///   APP_STORE=/tmp/test.store APP_SNAPSHOT=/tmp/shots ~/Applications/StreamSpike.app/Contents/MacOS/StreamSpike
-/// writes <page>-light.png and <page>-dark.png for every sidebar page, and
+/// writes <page>-light.png and <page>-dark.png for every page (welcome, stream, failed, add), and
 /// settings-<tab>-light.png and settings-<tab>-dark.png for every Settings tab, then quits.
 /// Each PNG gets a <page>-<mode>-layout.json with the grid probes (tools/check-layout.swift).
 /// APP_SNAPSHOT_PAGES=all,starred limits the pages. Add "settings" to include Settings.
 /// Add APP_ACCENT=<id> to see the pages in another accent.
+/// The pages snapshot mode walks through: nothing selected, a finished stream, a failed one.
+enum SnapshotPage: String, CaseIterable {
+    case welcome, stream, failed, add
+
+    @MainActor
+    func show(in model: AppModel) {
+        let sessions = model.allSessions()
+        model.showingAdd = self == .add
+        switch self {
+        case .welcome: model.selection = nil
+        case .stream: model.selection = sessions.first { $0.status == .complete }?.uuid
+        case .failed: model.selection = sessions.first { $0.status == .failed }?.uuid
+        case .add: break
+        }
+        if self == .stream, let session = sessions.first(where: { $0.status == .complete }) {
+            // Select the strongest spike so the chart and the viewer show a selection.
+            Task {
+                try? await Task.sleep(for: .seconds(0.8))
+                model.existingRuntime(session.uuid).map { $0.selectedSpikeID = $0.spikes.first?.id }
+            }
+        }
+    }
+}
+
 enum Snapshot {
     static func runIfRequested(model: AppModel, openSettings: OpenSettingsAction) {
         let env = ProcessInfo.processInfo.environment
@@ -32,9 +56,9 @@ enum Snapshot {
             try? await Task.sleep(for: .seconds(1.5))
             for mode in ["light", "dark"] {
                 NSApp.appearance = NSAppearance(named: mode == "light" ? .aqua : .darkAqua)
-                for page in SidebarItem.allCases where only?.contains(page.rawValue) ?? true {
-                    model.sidebar = page
-                    try? await Task.sleep(for: .seconds(0.8))
+                for page in SnapshotPage.allCases where only?.contains(page.rawValue) ?? true {
+                    page.show(in: model)
+                    try? await Task.sleep(for: .seconds(1.6))
                     capture(to: "\(dir)/\(page.rawValue)-\(mode).png")
                 }
             }
@@ -52,6 +76,7 @@ enum Snapshot {
                     }
                 }
             }
+            model.showingAdd = false
             print("SNAPSHOT done \(dir)")
             // An open sheet refuses terminate, and the run would wait forever.
             for window in NSApp.windows { if let sheet = window.attachedSheet { window.endSheet(sheet) } }

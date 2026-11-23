@@ -1,13 +1,15 @@
 import AppKit
 import SwiftData
 import SwiftUI
+import StreamSpikeKit
 
 // StreamSpike
 //   StreamSpike                      the app
 //   APP_STORE=<file> StreamSpike     use another database (tests, experiments)
-//   APP_SNAPSHOT=<dir> StreamSpike   save a PNG of every sidebar page and Settings tab in light and dark mode, then quit
-//   APP_SEED=1 StreamSpike           fill an empty /tmp store with sample items (tools/snap.sh)
+//   APP_SNAPSHOT=<dir> StreamSpike   save a PNG of every page and Settings tab in light and dark mode, then quit
+//   APP_SEED=1 StreamSpike           fill an empty /tmp store with sample streams (tools/snap.sh)
 //   StreamSpike --selftest           run the self-test on a /tmp store and quit with 0 or 1 (tools/selftest.sh)
+//   SELFTEST_ONLINE=<url> StreamSpike --selftest    also run the real tools against one VOD link
 //   APP_ACCENT=<id> StreamSpike      run with another accent from Theme.all (UI/Theme.swift)
 //   APP_GRID=1 StreamSpike           draw the 8 pt grid and the layout probes over the window
 
@@ -22,17 +24,38 @@ struct StreamSpikeApp: App {
                 .environment(model)
                 .themed()
                 .overlay { if GridOverlay.enabled { GridOverlay() } }
-                .frame(minWidth: 760, minHeight: 480)
+                .frame(minWidth: 1000, minHeight: 640)
         }
         .modelContainer(model.container)
-        .defaultSize(width: 1100, height: 720)
+        .defaultSize(width: 1280, height: 820)
         .windowToolbarStyle(.unified)
         .commands {
             SidebarCommands()
             ToolbarCommands()
             CommandGroup(replacing: .newItem) {
-                Button("New Item") { model.addItem() }
+                Button("Add Stream…") { model.newStream() }
                     .keyboardShortcut("n")
+            }
+            CommandMenu("Stream") {
+                Button("Copy Timestamped Link") {
+                    if let session = model.selectedSession, let runtime = model.existingRuntime(session.uuid) {
+                        model.copyLink(session, runtime)
+                    }
+                }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                Button("Export Spikes as JSON…") { export(.json) }
+                    .keyboardShortcut("j", modifiers: [.command, .shift])
+                Button("Export Spikes as CSV…") { export(.csv) }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                Divider()
+                Button("Download Again") {
+                    if let session = model.selectedSession { model.start(session) }
+                }
+                .keyboardShortcut("r")
+                Button("Stop") {
+                    if let session = model.selectedSession { model.cancel(session) }
+                }
+                .keyboardShortcut(".")
             }
         }
 
@@ -43,6 +66,12 @@ struct StreamSpikeApp: App {
         }
         .windowResizability(.contentSize)
     }
+
+    private func export(_ format: ExportFormat) {
+        if let session = model.selectedSession, let runtime = model.existingRuntime(session.uuid) {
+            model.exportSpikes(session, runtime, as: format)
+        }
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -50,6 +79,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Started from a terminal, the process is not a foreground app yet.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
+    }
+
+    /// A tool may have been installed while the app was in the background.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        AppSettings.shared.refresh()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -78,7 +112,7 @@ enum Store {
 
     static func makeContainer() -> ModelContainer {
         do {
-            return try ModelContainer(for: Item.self, configurations: ModelConfiguration(url: url))
+            return try ModelContainer(for: StreamSession.self, configurations: ModelConfiguration(url: url))
         } catch {
             fatalError("Could not open the database at \(url.path): \(error)")
         }

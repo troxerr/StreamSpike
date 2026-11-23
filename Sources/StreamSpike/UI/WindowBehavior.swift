@@ -22,17 +22,23 @@ private struct FitsContent: ViewModifier {
     var max: CGFloat
     @State private var height: CGFloat?
 
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content
-            // Only the content's own height: the insets change as the window
-            // resizes, which would start a resize loop.
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentSize.height.rounded(.up)
-            } action: { _, new in
-                if abs(new - (height ?? 0)) >= 1 { height = new }
-            }
-            .frame(height: height.map { min($0, max) })
-            .scrollBounceBehavior(.basedOnSize)
+        if #available(macOS 15.0, *) {
+            content
+                // Only the content's own height: the insets change as the window
+                // resizes, which would start a resize loop.
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentSize.height.rounded(.up)
+                } action: { _, new in
+                    if abs(new - (height ?? 0)) >= 1 { height = new }
+                }
+                .frame(height: height.map { min($0, max) })
+                .scrollBounceBehavior(.basedOnSize)
+        } else {
+            // macOS 14 has no scroll geometry callback: use a fixed page height.
+            content.frame(height: max)
+        }
     }
 }
 

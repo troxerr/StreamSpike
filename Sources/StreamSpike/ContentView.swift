@@ -1,18 +1,27 @@
 import SwiftData
 import SwiftUI
+import StreamSpikeKit
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
+        @Bindable var model = model
         NavigationSplitView {
-            sidebar
-        } content: {
-            ItemList(page: model.sidebar ?? .all)
-                .navigationSplitViewColumnWidth(min: 260, ideal: 320)
+            SidebarView()
+                .navigationSplitViewColumnWidth(min: 220, ideal: 264, max: 360)
         } detail: {
-            ItemDetail()
+            DetailContainer()
+        }
+        .sheet(isPresented: $model.showingAdd) { AddStreamSheet() }
+        .alert("StreamSpike", isPresented: Binding(
+            get: { model.alertMessage != nil },
+            set: { if !$0 { model.alertMessage = nil } }
+        )) {
+            Button("OK") {}
+        } message: {
+            Text(model.alertMessage ?? "")
         }
         .task {
             SeedData.insertIfRequested(into: model)
@@ -20,72 +29,153 @@ struct ContentView: View {
             Snapshot.runIfRequested(model: model, openSettings: openSettings)
         }
     }
-
-    private var sidebar: some View {
-        @Bindable var model = model
-        return List(SidebarItem.allCases, selection: $model.sidebar) { page in
-            Label(page.title, systemImage: page.symbol)
-                .tag(page)
-        }
-        .navigationSplitViewColumnWidth(min: 180, ideal: 212)
-    }
 }
 
-struct ItemList: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.modelContext) private var context
-    @Query(sort: \Item.createdAt, order: .reverse) private var items: [Item]
-    let page: SidebarItem
+// MARK: - Sidebar
 
-    private var visible: [Item] {
-        page == .starred ? items.filter(\.isStarred) : items
-    }
+struct SidebarView: View {
+    @Environment(AppModel.self) private var model
+    @Query(sort: \StreamSession.createdAt, order: .reverse) private var sessions: [StreamSession]
 
     var body: some View {
         @Bindable var model = model
-        List(visible, selection: $model.selection) { item in
-            Label(item.title, systemImage: item.isStarred ? "star.fill" : "circle")
-                .tag(item.id)
-                .contextMenu {
-                    Button("Delete", role: .destructive) { context.delete(item) }
-                }
-        }
-        .overlay {
-            if visible.isEmpty {
-                ContentUnavailableView(
-                    "No Items",
-                    systemImage: page.symbol,
-                    description: Text("Press Command-N to add one.")
-                )
+        List(selection: $model.selection) {
+            ForEach(sessions) { session in
+                SessionRow(session: session)
+                    .tag(session.uuid)
+                    .contextMenu {
+                        if session.status == .running {
+                            Button("Stop") { model.cancel(session) }
+                        } else {
+                            Button("Download Again") { model.start(session) }
+                        }
+                        Button("Copy Link") { copy(session.urlString) }
+                        Divider()
+                        Button("Delete", role: .destructive) { model.remove(session) }
+                    }
             }
         }
-        .navigationTitle(page.title)
+        .navigationTitle("Streams")
+        .overlay {
+            if sessions.isEmpty {
+                ContentUnavailableView("No Streams", systemImage: "waveform",
+                                       description: Text("Click + to add a YouTube, Twitch, or Kick link."))
+            }
+        }
         .toolbar {
             ToolbarItem {
-                Button("New Item", systemImage: "plus") { model.addItem() }
-                    .help("Add an item (Command-N)")
+                Button("Add Stream", systemImage: "plus") { model.newStream() }
+                    .help("Add a stream (Command-N)")
             }
+        }
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+struct SessionRow: View {
+    @Environment(AppModel.self) private var model
+    let session: StreamSession
+
+    var body: some View {
+        HStack(spacing: Space.md) {
+            PlatformBadge(platform: session.platform)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(session.title)
+                    .lineLimit(2)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            switch session.status {
+            case .running:
+                ProgressView().controlSize(.small)
+            case .failed:
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .help(session.statusDetail)
+            default:
+                EmptyView()
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var subtitle: String {
+        switch session.status {
+        case .queued: return "Queued"
+        case .running: return model.existingRuntime(session.uuid)?.chatStatus ?? "Starting"
+        case .failed: return session.statusDetail.isEmpty ? "Failed" : session.statusDetail
+        case .complete, .cancelled:
+            let spikes = session.spikeCount == 1 ? "1 spike" : "\(session.spikeCount) spikes"
+            let length = session.duration > 0 ? " · " + Timecode.string(session.duration) : ""
+            return (session.status == .cancelled ? "Stopped · " : "") + spikes + length
         }
     }
 }
 
-struct ItemDetail: View {
-    @Environment(AppModel.self) private var model
-    @Query private var items: [Item]
+struct PlatformBadge: View {
+    let platform: Platform
+    var size: CGFloat = 28
 
     var body: some View {
-        if let item = items.first(where: { $0.id == model.selection }) {
-            @Bindable var item = item
-            Form {
-                TextField("Title", text: $item.title)
-                Toggle("Starred", isOn: $item.isStarred)
-                TextField("Notes", text: $item.notes, axis: .vertical)
-                    .lineLimit(4...)
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(color)
+            .frame(width: size, height: size)
+            .overlay {
+                // A glyph on a saturated platform color, so a fixed white reads in light and dark.
+                Image(systemName: symbol)
+                    .font(.system(size: size * 0.46, weight: .bold))
+                    .foregroundStyle(.white)
             }
-            .formStyle(.grouped)
+            .accessibilityLabel(platform.displayName)
+    }
+
+    private var color: Color {
+        switch platform {
+        case .youtube: .red
+        case .twitch: .purple
+        case .kick: .green
+        }
+    }
+
+    private var symbol: String {
+        switch platform {
+        case .youtube: "play.fill"
+        case .twitch: "bubble.left.fill"
+        case .kick: "bolt.fill"
+        }
+    }
+}
+
+// MARK: - Detail
+
+struct DetailContainer: View {
+    @Environment(AppModel.self) private var model
+    @Query private var sessions: [StreamSession]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            DependencyBanner()
+            if let session = sessions.first(where: { $0.uuid == model.selection }) {
+                StreamDetailView(session: session)
+                    .id(session.uuid)
             } else {
-            ContentUnavailableView("No Selection", systemImage: "sidebar.right")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ContentUnavailableView {
+                    Label("Find the moments chat lost it", systemImage: "waveform.path.ecg")
+                } description: {
+                    Text("Add a VOD link to chart chat activity and read what the streamer said at each spike.")
+                } actions: {
+                    Button("Add Stream") { model.newStream() }
+                        .buttonStyle(.borderedProminent)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
     }
 }

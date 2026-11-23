@@ -13,8 +13,9 @@ public struct SpikeExportRow: Codable, Sendable, Equatable {
 }
 
 public enum SpikeExport {
+    /// `timestamped` is false for a live monitor, whose times count from when monitoring began, not from the video start.
     public static func rows(spikes: [Spike], transcript: [TranscriptSegment], stream: StreamURL,
-                            settings: SpikeSettings) -> [SpikeExportRow] {
+                            settings: SpikeSettings, timestamped: Bool = true) -> [SpikeExportRow] {
         spikes.enumerated().map { index, spike in
             let said = TranscriptPairing.window(transcript, around: spike, settings: settings)
                 .map(\.text).joined(separator: " ")
@@ -27,7 +28,7 @@ public enum SpikeExport {
                 peakMessagesPerSecond: (spike.peakPerSecond * 100).rounded() / 100,
                 topEmotes: spike.topEmotes.map { "\($0.name) x\($0.count)" },
                 transcript: said,
-                url: stream.link(at: max(0, spike.time - settings.preRoll)))
+                url: timestamped ? stream.link(at: max(0, spike.time - settings.preRoll)) : stream.link())
         }
     }
 

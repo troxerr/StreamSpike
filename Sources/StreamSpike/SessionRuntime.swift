@@ -26,6 +26,8 @@ final class SessionRuntime {
     var transcriptFraction: Double?
     var transcriptSource = ""
     var warnings: [String] = []
+    /// Set while monitoring a live stream. Time zero of the chart.
+    var liveStart: Date?
 
     @ObservationIgnored var task: Task<Void, Never>?
     @ObservationIgnored var redetectTask: Task<Void, Never>?
@@ -33,6 +35,10 @@ final class SessionRuntime {
     @ObservationIgnored private var dirty = false
 
     var isRunning: Bool { phase == .running }
+    var isLive: Bool { liveStart != nil }
+
+    /// The most recent spike, which is what someone watching live wants first.
+    var latestSpike: Spike? { spikes.max { $0.time < $1.time } }
 
     var selectedSpike: Spike? {
         spikes.first { $0.id == selectedSpikeID }
@@ -50,6 +56,7 @@ final class SessionRuntime {
         transcriptFraction = nil
         transcriptSource = ""
         warnings = []
+        liveStart = nil
         chatIsSorted = true
         dirty = false
         phase = .idle
@@ -126,11 +133,13 @@ final class SessionRuntime {
     }
 
     /// While an analysis runs: recompute about once a second when new data arrived.
-    func refreshLoop(settings: @escaping @MainActor () -> SpikeSettings, knownDuration: Double?) async {
+    /// `always` keeps the chart growing on a live stream even in a second with no new chat.
+    func refreshLoop(settings: @escaping @MainActor () -> SpikeSettings, knownDuration: @escaping @MainActor () -> Double?,
+                     always: Bool = false) async {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(1))
-            guard dirty, !Task.isCancelled else { continue }
-            await recompute(settings: settings(), knownDuration: knownDuration)
+            guard dirty || always, !Task.isCancelled else { continue }
+            await recompute(settings: settings(), knownDuration: knownDuration())
         }
     }
 

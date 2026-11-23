@@ -54,7 +54,8 @@ struct SpikeViewerPane: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(runtime.selectedSpike.map { "Spike at \(Timecode.string($0.time))" } ?? "Transcript and chat")
                         .font(.headline)
-                    Text("T − \(Int(model.settings.detection.preRoll)) s to T + \(Int(model.settings.detection.postRoll)) s")
+                    Text("T − \(Int(model.settings.detection.preRoll)) s to T + \(Int(model.settings.detection.postRoll)) s"
+                         + (session.mode == .live ? " · times count from the start of monitoring" : ""))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -81,8 +82,7 @@ struct SpikeViewerPane: View {
     }
 
     private var linkHelp: String {
-        guard let stream = session.stream else { return "Copy a link" }
-        if !stream.supportsTimestampLinks { return "Copy the video link. Kick has no time parameter." }
+        if session.mode == .live { return "Copy the stream link. Live times do not match the video." }
         return runtime.selectedSpike == nil
             ? "Copy the stream link (Shift-Command-C)"
             : "Copy a link that starts at the top of this window (Shift-Command-C)"

@@ -1,7 +1,7 @@
 # StreamSpike
 
 StreamSpike: a native macOS 14+ app in SwiftUI. It downloads a stream's chat and transcript
-(YouTube, Twitch, Kick), finds chat activity spikes, and shows them next to what the streamer
+(YouTube, Twitch), finds chat activity spikes, and shows them next to what the streamer
 said. It runs on this Mac only, with a local SwiftData database and no server.
 
 ## How it works
@@ -9,8 +9,11 @@ said. It runs on this Mac only, with a local SwiftData database and no server.
 - `StreamSpikeKit/Ingestion/` has the `ChatSource` and `TranscriptSource` protocols, the VOD sources
   (`ChatDownloaderSource`, `YouTubeTranscriptAPISource`, `YtDlpCaptionSource`, `WhisperTranscriptSource`,
   `FallbackTranscriptSource`), and `IngestionPlanner`, which picks sources per platform and mode.
-  **Live Monitor plugs in at `IngestionPlanner.plan`**: add a Twitch IRC / Kick Pusher `ChatSource`
-  and a chunked live `TranscriptSource` for `.live`.
+  `IngestionPlanner.plan(mode: .live)` picks the live sources (`LiveChatSources.swift`, `LiveWhisperSource.swift`):
+  Twitch IRC over a WebSocket, YouTube through chat_downloader then yt-dlp's live chat, and live Whisper on
+  20 s ffmpeg chunks. Kick is not supported: its recordings have no chat replay these tools can read, and its
+  live chat now needs an authenticated realtime API.
+  Live times count from `startedAt` (when monitoring began), so live links and exports carry no video time.
 - `SpikeDetector` buckets chat, computes a rolling Z-score, and merges neighbouring flagged buckets.
   `TranscriptPairing` attaches the T-30 s to T+15 s transcript window.
 - `ProcessRunner` runs every command line tool off the main thread and kills it when the task is cancelled.

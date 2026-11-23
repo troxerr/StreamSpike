@@ -18,7 +18,7 @@ extension AppModel {
     @discardableResult
     func addStream(_ text: String, mode: StreamMode, limitMinutes: Int) -> StreamSession? {
         guard let url = StreamURL.parse(text) else {
-            alertMessage = "That is not a YouTube, Twitch, or Kick link."
+            alertMessage = "That is not a YouTube or Twitch link."
             return nil
         }
         let session = StreamSession(url: url, mode: mode, limitSeconds: Double(max(0, limitMinutes)) * 60)
@@ -46,6 +46,15 @@ extension AppModel {
         }
     }
 
+    /// Downloads a recording again. A live session is never overwritten: monitoring again makes a new session.
+    func restart(_ session: StreamSession) {
+        if session.mode == .live {
+            addStream(session.urlString, mode: .live, limitMinutes: 0)
+        } else {
+            start(session)
+        }
+    }
+
     func cancel(_ session: StreamSession) {
         runtimes[session.uuid]?.task?.cancel()
     }
@@ -57,31 +66,51 @@ extension AppModel {
         var cancelled = false
 
         guard let stream = session.stream else {
-            await finish(session, runtime, failure: "The saved link can no longer be read.", cancelled: false)
+            await finish(session, runtime, failure: "The saved link can no longer be read.", cancelled: false, live: false)
             return
         }
+
+        // A live run is timed from now: chat and speech both count seconds from this moment.
+        let isLive = session.mode == .live
+        let startedAt = Date()
+        if isLive { runtime.liveStart = startedAt }
 
         runtime.chatStatus = "Reading stream details"
         if let meta = try? await MetadataFetcher.fetch(ytDlp: tools.path(for: .ytDlp), url: stream.link()) {
             session.title = meta.title
             session.channel = meta.channel
-            session.duration = meta.duration ?? 0
-            if let limit, session.duration > 0 { session.duration = min(session.duration, limit) }
+            if !isLive {
+                session.duration = meta.duration ?? 0
+                if let limit, session.duration > 0 { session.duration = min(session.duration, limit) }
+            }
         } else if Task.isCancelled == false {
-            runtime.warnings.append("Stream details were not available, so the length is estimated from chat.")
+            runtime.warnings.append(isLive
+                ? "Stream details were not available. Is the stream live?"
+                : "Stream details were not available, so the length is estimated from chat.")
         }
-        let knownDuration: Double? = session.duration > 0 ? session.duration : nil
+        let knownDuration: Double? = !isLive && session.duration > 0 ? session.duration : nil
         runtime.duration = knownDuration ?? 0
+        let duration: @MainActor () -> Double? = { isLive ? Date().timeIntervalSince(startedAt) : knownDuration }
 
         do {
-            let plan = try IngestionPlanner.plan(stream: stream, mode: session.mode, tools: tools, limitSeconds: limit)
+            let plan = try IngestionPlanner.plan(stream: stream, mode: session.mode, tools: tools, limitSeconds: limit, startedAt: startedAt)
             runtime.chatStatus = "Starting chat download"
             runtime.transcriptStatus = "Starting transcript"
             let refresher = Task { [weak self] in
                 guard let self else { return }
-                await runtime.refreshLoop(settings: { self.settings.detection }, knownDuration: knownDuration)
+                await runtime.refreshLoop(settings: { self.settings.detection }, knownDuration: duration, always: isLive)
             }
             defer { refresher.cancel() }
+            // A long live session is saved every minute, so a crash loses little.
+            let autosave = Task { [weak self] in
+                guard isLive else { return }
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(60))
+                    guard let self, !Task.isCancelled else { return }
+                    await self.persist(session, runtime)
+                }
+            }
+            defer { autosave.cancel() }
 
             let chatTask = Task { try await self.consumeChat(plan.chat, runtime, knownDuration: knownDuration) }
             let transcriptTask = Task { await self.consumeTranscript(plan.transcript, runtime) }
@@ -105,7 +134,7 @@ extension AppModel {
             if Task.isCancelled { cancelled = true } else { failure = error.localizedDescription }
         }
         if Task.isCancelled { cancelled = true }
-        await finish(session, runtime, failure: failure, cancelled: cancelled)
+        await finish(session, runtime, failure: failure, cancelled: cancelled, live: isLive)
     }
 
     private func consumeChat(_ source: any ChatSource, _ runtime: SessionRuntime, knownDuration: Double?) async throws {
@@ -146,7 +175,7 @@ extension AppModel {
     }
 
     /// Final analysis, then save. Keeps whatever arrived when a run is stopped.
-    private func finish(_ session: StreamSession, _ runtime: SessionRuntime, failure: String?, cancelled: Bool) async {
+    private func finish(_ session: StreamSession, _ runtime: SessionRuntime, failure: String?, cancelled: Bool, live: Bool) async {
         runtime.redetectTask?.cancel()
         let sorted = await Task.detached { [chat = runtime.chat] in chat.sorted { $0.time < $1.time } }.value
         runtime.chat = sorted
@@ -157,6 +186,8 @@ extension AppModel {
             try? context.save()
             return
         }
+        // A live run ends at the moment it stopped.
+        if live, let start = runtime.liveStart { session.duration = Date().timeIntervalSince(start) }
         let known: Double? = session.duration > 0 ? session.duration : nil
         // A stopped run is a cancelled task, which would skip the final analysis. Run it in a fresh one.
         let detection = settings.detection
@@ -164,8 +195,10 @@ extension AppModel {
         if session.duration == 0 { session.duration = runtime.duration }
         runtime.transcript.sort { $0.start < $1.start }
         runtime.phase = .finished
-        session.status = cancelled ? .cancelled : .complete
-        session.statusDetail = cancelled ? "Stopped. Kept what was downloaded." : (failure ?? runtime.warnings.first ?? "")
+        // Stopping is how a live run normally ends.
+        session.status = cancelled && !live ? .cancelled : .complete
+        session.statusDetail = live ? (cancelled ? "Monitoring stopped." : "The stream ended.")
+            : (cancelled ? "Stopped. Kept what was downloaded." : (failure ?? runtime.warnings.first ?? ""))
         await persist(session, runtime)
     }
 
@@ -206,7 +239,8 @@ extension AppModel {
     /// A link to the selected spike's synced window, or to the stream when no spike is selected.
     func timestampLink(_ session: StreamSession, _ runtime: SessionRuntime) -> String? {
         guard let stream = session.stream else { return nil }
-        guard let spike = runtime.selectedSpike else { return stream.link() }
+        // A live session's times count from when monitoring began, so they say nothing about the video.
+        guard let spike = runtime.selectedSpike, session.mode == .vod else { return stream.link() }
         return stream.link(at: max(0, spike.time - settings.detection.preRoll))
     }
 
@@ -222,7 +256,8 @@ extension AppModel {
             return
         }
         let detection = settings.detection
-        let rows = SpikeExport.rows(spikes: runtime.spikes, transcript: runtime.transcript, stream: stream, settings: detection)
+        let rows = SpikeExport.rows(spikes: runtime.spikes, transcript: runtime.transcript, stream: stream,
+                                    settings: detection, timestamped: session.mode == .vod)
         let data: Data
         do {
             switch format {

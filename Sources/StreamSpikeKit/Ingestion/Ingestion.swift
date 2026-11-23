@@ -10,7 +10,7 @@ public enum IngestEvent<Item: Sendable>: Sendable {
     case items([Item])
 }
 
-/// Where chat comes from. A VOD source reads a recording; a live source (Twitch IRC, Kick Pusher)
+/// Where chat comes from. A VOD source reads a recording; a live source (Twitch IRC)
 /// keeps the stream open and never finishes on its own.
 public protocol ChatSource: Sendable {
     func stream() -> AsyncThrowingStream<IngestEvent<ChatMessage>, Error>
@@ -45,22 +45,18 @@ public struct IngestionPlan: Sendable {
     public var transcript: any TranscriptSource
 }
 
-/// Picks the sources for a stream. Live Monitor plugs in here: return a Twitch IRC or Kick Pusher
+/// Picks the sources for a stream. Live Monitor plugs in here: return a Twitch IRC
 /// `ChatSource` and a chunked live `TranscriptSource` for `.live`.
 public enum IngestionPlanner {
+    /// `startedAt` is time zero for a live run: every chat message and transcript segment is timed from it.
     public static func plan(stream: StreamURL, mode: StreamMode, tools: ToolPaths,
-                            limitSeconds: Double?) throws -> IngestionPlan {
+                            limitSeconds: Double?, startedAt: Date = Date()) throws -> IngestionPlan {
         guard stream.supports(mode) else {
             throw ToolError(mode == .vod
                 ? "This link is a channel, not a recording. Paste a VOD link, or use Live Monitor."
                 : "This link is a recording. Paste a channel link for Live Monitor.")
         }
-        guard mode == .vod else {
-            throw ToolError("Live Monitor is not wired in yet. VOD Analysis works for YouTube and Twitch.")
-        }
-        guard stream.platform != .kick else {
-            throw ToolError("Kick has no chat replay that chat_downloader can read. Kick arrives with Live Monitor.")
-        }
+        if mode == .live { return live(stream: stream, tools: tools, startedAt: startedAt) }
 
         // chat_downloader streams chat as it goes but breaks when YouTube or Twitch change their pages.
         // On YouTube, yt-dlp reads the same replay and is the fallback.
@@ -91,6 +87,25 @@ public enum IngestionPlanner {
         } else {
             transcript = whisper
         }
+        return IngestionPlan(chat: chat, transcript: transcript)
+    }
+
+    /// Twitch chat over its IRC socket, YouTube chat through chat_downloader and yt-dlp,
+    /// and Whisper on chunks of the live audio for both.
+    private static func live(stream: StreamURL, tools: ToolPaths, startedAt: Date) -> IngestionPlan {
+        let chat: any ChatSource
+        switch stream.platform {
+        case .twitch: chat = TwitchIRCChatSource(channel: stream.id, startedAt: startedAt)
+        case .youtube:
+            // chat_downloader is tried first, then yt-dlp's live chat downloader, which survives YouTube's page changes.
+            chat = FallbackChatSource(sources: [
+                ("chat_downloader", ChatDownloaderSource(executable: tools.path(for: .chatDownloader), url: stream.link(), liveStart: startedAt)),
+                ("yt-dlp", YtDlpChatSource(ytDlp: tools.path(for: .ytDlp), url: stream.link(), liveStart: startedAt)),
+            ])
+        }
+        let transcript = LiveWhisperTranscriptSource(
+            ytDlp: tools.path(for: .ytDlp), ffmpeg: tools.path(for: .ffmpeg), whisperCLI: tools.path(for: .whisperCLI),
+            model: tools.path(for: .whisperModel), url: stream.link(), startedAt: startedAt)
         return IngestionPlan(chat: chat, transcript: transcript)
     }
 }

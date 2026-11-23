@@ -7,11 +7,14 @@ public struct YtDlpChatSource: ChatSource {
     public var ytDlp: String
     public var url: String
     public var limitSeconds: Double?
+    /// Set for a live stream: yt-dlp keeps polling until stopped, and messages are timed from this moment.
+    public var liveStart: Date?
 
-    public init(ytDlp: String, url: String, limitSeconds: Double? = nil) {
+    public init(ytDlp: String, url: String, limitSeconds: Double? = nil, liveStart: Date? = nil) {
         self.ytDlp = ytDlp
         self.url = url
         self.limitSeconds = limitSeconds
+        self.liveStart = liveStart
     }
 
     public func stream() -> AsyncThrowingStream<IngestEvent<ChatMessage>, Error> {
@@ -34,7 +37,9 @@ public struct YtDlpChatSource: ChatSource {
                 try await ProcessRunner.run(source.ytDlp, arguments, captureStdout: false,
                                             onStdoutLine: { lines.add($0) }, onStderrLine: { lines.add($0) })
             }
-            let tailer = ChatFileTailer(locate: { YtDlpChatSource.chatFile(in: folder) }, parse: { YouTubeReplayParser.parse($0) })
+            let liveStart = source.liveStart
+            let tailer = ChatFileTailer(locate: { YtDlpChatSource.chatFile(in: folder) },
+                                        parse: { YouTubeReplayParser.parse($0, liveStart: liveStart) })
             let poller = Task {
                 while true {
                     let isLastPass = finished.value
@@ -88,8 +93,9 @@ public struct YtDlpChatSource: ChatSource {
     /// The `live_chat` file yt-dlp is writing, or has finished writing.
     static func chatFile(in folder: URL) -> String? {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        let candidates = names.filter { $0.hasPrefix("chat.") }
-        let name = candidates.first { $0.hasSuffix(".live_chat.json") } ?? candidates.first { $0.contains("live_chat") }
+        // yt-dlp also leaves `-Frag` files beside the chat file while it downloads.
+        let name = names.first { $0.hasPrefix("chat.") && $0.hasSuffix(".live_chat.json") }
+            ?? names.first { $0.hasPrefix("chat.") && $0.hasSuffix(".live_chat.json.part") }
         return name.map { folder.appendingPathComponent($0).path }
     }
 }
@@ -113,6 +119,7 @@ public enum YouTubeReplayParser {
         }
         struct Renderer: Decodable {
             struct Name: Decodable { var simpleText: String? }
+            var timestampUsec: String?
             struct Message: Decodable { var runs: [Run]? }
             struct Run: Decodable {
                 struct Emoji: Decodable {
@@ -130,14 +137,25 @@ public enum YouTubeReplayParser {
 
     private static let decoder = JSONDecoder()
 
-    public static func parse(_ line: Data) -> [ChatMessage] {
-        guard let replay = (try? decoder.decode(Line.self, from: line))?.replayChatItemAction,
-              let offset = replay.videoOffsetTimeMsec.flatMap(Double.init), offset >= 0
-        else { return [] }
-        let time = offset / 1000
+    /// A recording's lines carry the video offset. A live stream's lines do not, so with `liveStart` each
+    /// message is timed from its own clock, and the backlog from before monitoring began is dropped.
+    public static func parse(_ line: Data, liveStart: Date? = nil) -> [ChatMessage] {
+        guard let replay = (try? decoder.decode(Line.self, from: line))?.replayChatItemAction else { return [] }
+        var recordedTime = 0.0
+        if liveStart == nil {
+            guard let offset = replay.videoOffsetTimeMsec.flatMap(Double.init), offset >= 0 else { return [] }
+            recordedTime = offset / 1000
+        }
         return (replay.actions ?? []).compactMap { action in
             let item = action.addChatItemAction?.item
             guard let renderer = item?.liveChatTextMessageRenderer ?? item?.liveChatPaidMessageRenderer else { return nil }
+            var time = recordedTime
+            if let liveStart {
+                guard let micros = renderer.timestampUsec.flatMap(Double.init) else { return nil }
+                time = micros / 1_000_000 - liveStart.timeIntervalSince1970
+                guard time >= -1 else { return nil }
+                time = max(0, time)
+            }
             let text = (renderer.message?.runs ?? []).map { run -> String in
                 if let text = run.text { return text }
                 guard let emoji = run.emoji else { return "" }

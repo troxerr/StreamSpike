@@ -3,7 +3,7 @@ import SwiftData
 import StreamSpikeKit
 
 /// Sample streams for snapshots: APP_SEED=1 with APP_STORE in /tmp fills an empty store with a
-/// Twitch and a YouTube stream that have chat, a transcript, and spikes, and a Kick stream that failed.
+/// Twitch and a YouTube stream that have chat, a transcript, and spikes, and a YouTube stream that failed.
 /// The chat is generated from a fixed seed, so every run draws the same chart.
 @MainActor
 enum SeedData {
@@ -14,11 +14,11 @@ enum SeedData {
             return
         }
         guard ((try? model.context.fetchCount(FetchDescriptor<StreamSession>())) ?? 0) == 0 else { return }
-        insertSamples(into: model)
+        insertSamples(into: model, includeLive: true)
     }
 
     /// Also used by the self-test.
-    static func insertSamples(into model: AppModel) {
+    static func insertSamples(into model: AppModel, includeLive: Bool = false) {
         let detection = SpikeSettings()
         let samples: [(Platform, String, String, String, Double, [(Double, Int)])] = [
             (.twitch, "https://www.twitch.tv/videos/2937522247", "Oops! All Final Fantasy: NES Trilogy Any% Race",
@@ -47,16 +47,24 @@ enum SeedData {
             session.status = .complete
             model.context.insert(session)
         }
-        if let url = StreamURL.parse("https://kick.com/video/6f2c1b7e-0000-4000-8000-000000000000") {
+        if let url = StreamURL.parse("https://www.youtube.com/watch?v=aqz-KE-bpKQ") {
             let session = StreamSession(url: url, mode: .vod, limitSeconds: 0)
-            session.title = "Kick Late Night Stream"
+            session.title = "Late Night Stream"
             session.createdAt = Date.now.addingTimeInterval(-7_200)
             session.status = .failed
-            session.statusDetail = "Kick has no chat replay that chat_downloader can read."
+            session.statusDetail = "Live chat replay was turned off for this video."
+            model.context.insert(session)
+        }
+        if includeLive, let url = StreamURL.parse("https://www.twitch.tv/nightowlplays") {
+            let session = StreamSession(url: url, mode: .live, limitSeconds: 0)
+            session.title = "Late night ranked grind"
+            session.channel = "nightowlplays"
+            session.createdAt = Date.now.addingTimeInterval(60)
+            session.status = .running
             model.context.insert(session)
         }
         try? model.context.save()
-        model.selection = model.allSessions().first?.uuid
+        model.selection = model.allSessions().first { $0.status == .complete }?.uuid
     }
 
     // MARK: Generators

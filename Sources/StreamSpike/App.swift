@@ -48,8 +48,8 @@ struct StreamSpikeApp: App {
                 Button("Export Spikes as CSV…") { export(.csv) }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
                 Divider()
-                Button("Download Again") {
-                    if let session = model.selectedSession { model.start(session) }
+                Button("Download Again or Monitor Again") {
+                    if let session = model.selectedSession { model.restart(session) }
                 }
                 .keyboardShortcut("r")
                 Button("Stop") {

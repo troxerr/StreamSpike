@@ -47,7 +47,7 @@ struct SidebarView: View {
                         if session.status == .running {
                             Button("Stop") { model.cancel(session) }
                         } else {
-                            Button("Download Again") { model.start(session) }
+                            Button(session.mode == .live ? "Monitor Again" : "Download Again") { model.restart(session) }
                         }
                         Button("Copy Link") { copy(session.urlString) }
                         Divider()
@@ -59,7 +59,7 @@ struct SidebarView: View {
         .overlay {
             if sessions.isEmpty {
                 ContentUnavailableView("No Streams", systemImage: "waveform",
-                                       description: Text("Click + to add a YouTube, Twitch, or Kick link."))
+                                       description: Text("Click + to add a YouTube or Twitch link."))
             }
         }
         .toolbar {
@@ -94,7 +94,16 @@ struct SessionRow: View {
             Spacer(minLength: 0)
             switch session.status {
             case .running:
-                ProgressView().controlSize(.small)
+                if session.mode == .live {
+                    Text("LIVE")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, Space.xs)
+                        .padding(.vertical, 2)
+                        .background(Color.red, in: Capsule())
+                } else {
+                    ProgressView().controlSize(.small)
+                }
             case .failed:
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
@@ -109,12 +118,15 @@ struct SessionRow: View {
     private var subtitle: String {
         switch session.status {
         case .queued: return "Queued"
-        case .running: return model.existingRuntime(session.uuid)?.chatStatus ?? "Starting"
+        case .running:
+            guard let runtime = model.existingRuntime(session.uuid) else { return "Starting" }
+            if runtime.isLive { return "\(runtime.chat.count.formatted()) messages · \(runtime.spikes.count) spikes" }
+            return runtime.chatStatus
         case .failed: return session.statusDetail.isEmpty ? "Failed" : session.statusDetail
         case .complete, .cancelled:
             let spikes = session.spikeCount == 1 ? "1 spike" : "\(session.spikeCount) spikes"
             let length = session.duration > 0 ? " · " + Timecode.string(session.duration) : ""
-            return (session.status == .cancelled ? "Stopped · " : "") + spikes + length
+            return (session.status == .cancelled ? "Stopped · " : "") + (session.mode == .live ? "Live · " : "") + spikes + length
         }
     }
 }
@@ -140,7 +152,6 @@ struct PlatformBadge: View {
         switch platform {
         case .youtube: .red
         case .twitch: .purple
-        case .kick: .green
         }
     }
 
@@ -148,7 +159,6 @@ struct PlatformBadge: View {
         switch platform {
         case .youtube: "play.fill"
         case .twitch: "bubble.left.fill"
-        case .kick: "bolt.fill"
         }
     }
 }

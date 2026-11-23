@@ -6,11 +6,14 @@ public struct ChatDownloaderSource: ChatSource {
     public var executable: String
     public var url: String
     public var limitSeconds: Double?
+    /// Set for a live stream: messages are timed from this moment, and the tool runs until stopped.
+    public var liveStart: Date?
 
-    public init(executable: String, url: String, limitSeconds: Double? = nil) {
+    public init(executable: String, url: String, limitSeconds: Double? = nil, liveStart: Date? = nil) {
         self.executable = executable
         self.url = url
         self.limitSeconds = limitSeconds
+        self.liveStart = liveStart
     }
 
     public func stream() -> AsyncThrowingStream<IngestEvent<ChatMessage>, Error> {
@@ -26,7 +29,13 @@ public struct ChatDownloaderSource: ChatSource {
             let finished = Flag()
             let lines = LineLog()
             let total = Counter()
-            let tailer = ChatFileTailer(path: file.path)
+            let tailer: ChatFileTailer
+            if let start = liveStart {
+                let parser = LiveChatLineParser(startedAt: start)
+                tailer = ChatFileTailer(path: file.path, parse: { parser.parse($0).map { [$0] } ?? [] })
+            } else {
+                tailer = ChatFileTailer(path: file.path)
+            }
             let poller = Task {
                 while true {
                     let isLastPass = finished.value

@@ -11,7 +11,7 @@ import SwiftUI
 /// Add APP_ACCENT=<id> to see the pages in another accent.
 /// The pages snapshot mode walks through: nothing selected, a finished stream, a failed one.
 enum SnapshotPage: String, CaseIterable {
-    case welcome, stream, failed, add
+    case welcome, stream, live, failed, add
 
     @MainActor
     func show(in model: AppModel) {
@@ -21,6 +21,21 @@ enum SnapshotPage: String, CaseIterable {
         case .welcome: model.selection = nil
         case .stream: model.selection = sessions.first { $0.status == .complete }?.uuid
         case .failed: model.selection = sessions.first { $0.status == .failed }?.uuid
+        case .live:
+            // A running live session has no task here, so fill its runtime by hand, as a minute-old monitor would look.
+            guard let session = sessions.first(where: { $0.mode == .live }) else { break }
+            model.selection = session.uuid
+            let runtime = model.runtime(for: session)
+            if runtime.chat.isEmpty {
+                runtime.liveStart = Date().addingTimeInterval(-754)
+                runtime.phase = .running
+                runtime.append(chat: SeedData.makeChat(duration: 754, bursts: [(210, 70), (480, 120), (700, 90)], seed: 3))
+                runtime.append(transcript: SeedData.makeTranscript(duration: 740))
+                runtime.chatStatus = "Listening to #nightowlplays"
+                runtime.transcriptStatus = "Transcribing live audio"
+                runtime.transcriptSource = "Whisper (live)"
+                Task { await runtime.recompute(settings: model.settings.detection, knownDuration: 754) }
+            }
         case .add: break
         }
         if self == .stream, let session = sessions.first(where: { $0.status == .complete }) {

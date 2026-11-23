@@ -1,6 +1,6 @@
 import Foundation
 
-/// A parsed YouTube, Twitch, or Kick link.
+/// A parsed YouTube or Twitch link.
 public struct StreamURL: Sendable, Hashable {
     public enum Kind: Sendable, Hashable {
         /// A recording (or any YouTube video).
@@ -64,23 +64,12 @@ public struct StreamURL: Sendable, Hashable {
                 return StreamURL(platform: .twitch, kind: .live, id: channel.lowercased(), original: text)
             }
             return nil
-        case "kick.com":
-            if parts.count >= 2, parts[0] == "video" {
-                return StreamURL(platform: .kick, kind: .vod, id: parts[1], original: text)
-            }
-            if parts.count >= 3, parts[1] == "videos" {
-                return StreamURL(platform: .kick, kind: .vod, id: parts[2], original: text)
-            }
-            if let channel = parts.first, parts.count == 1 {
-                return StreamURL(platform: .kick, kind: .live, id: channel.lowercased(), original: text)
-            }
-            return nil
         default:
             return nil
         }
     }
 
-    /// A link that opens the stream at `seconds`. Kick has no time parameter, so its link opens the video.
+    /// A link that opens the stream at `seconds`.
     public func link(at seconds: Double? = nil) -> String {
         let total = max(0, Int((seconds ?? 0).rounded(.down)))
         switch (platform, kind) {
@@ -93,14 +82,8 @@ public struct StreamURL: Sendable, Hashable {
             return base + "?t=\(total / 3600)h\((total % 3600) / 60)m\(total % 60)s"
         case (.twitch, .live):
             return "https://www.twitch.tv/\(id)"
-        case (.kick, .vod):
-            return "https://kick.com/video/\(id)"
-        case (.kick, .live):
-            return "https://kick.com/\(id)"
         }
     }
-
-    public var supportsTimestampLinks: Bool { platform != .kick }
 
     private static func isVideoID(_ id: String) -> Bool {
         id.count == 11 && id.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }

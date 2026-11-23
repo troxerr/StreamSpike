@@ -16,13 +16,13 @@ struct StreamURLTests {
         #expect(StreamURL.parse("https://www.youtube.com/watch?v=short") == nil)
     }
 
-    @Test func twitchAndKick() {
+    @Test func twitchLinks() {
         let vod = StreamURL.parse("https://www.twitch.tv/videos/2937522247")
         #expect(vod?.platform == .twitch && vod?.kind == .vod && vod?.id == "2937522247")
         let channel = StreamURL.parse("twitch.tv/Shroud")
         #expect(channel?.kind == .live && channel?.id == "shroud")
-        let kick = StreamURL.parse("https://kick.com/video/abc-123")
-        #expect(kick?.platform == .kick && kick?.kind == .vod)
+        #expect(StreamURL.parse("https://kick.com/video/abc-123") == nil)
+        #expect(StreamURL.parse("https://kick.com/xqc") == nil)
         #expect(StreamURL.parse("https://example.com/watch?v=dQw4w9WgXcQ") == nil)
         #expect(StreamURL.parse("") == nil)
     }
@@ -230,5 +230,57 @@ struct ChatSourceTests {
         let paths = ToolPaths(paths: [.twitchDl: "/nonexistent/twitch-dl"])
         #expect(!paths.missing().contains(.twitchDl))
         #expect(Dependency.twitchDl.isOptional)
+    }
+}
+
+@Suite("Live chat")
+struct LiveChatTests {
+    @Test func parsesTwitchIRC() {
+        let tagged = #"@badge-info=;color=#FF0000;display-name=Cool\sFan;id=1 :coolfan!coolfan@coolfan.tmi.twitch.tv PRIVMSG #streamer :KEKW that was wild"#
+        #expect(TwitchIRCParser.parse(tagged) == .message(author: "Cool Fan", text: "KEKW that was wild"))
+        let plain = ":nick!nick@nick.tmi.twitch.tv PRIVMSG #chan :hello: world"
+        #expect(TwitchIRCParser.parse(plain) == .message(author: "nick", text: "hello: world"))
+        let action = ":nick!nick@nick.tmi.twitch.tv PRIVMSG #chan :\u{1}ACTION waves\u{1}"
+        #expect(TwitchIRCParser.parse(action) == .message(author: "nick", text: "waves"))
+        #expect(TwitchIRCParser.parse("PING :tmi.twitch.tv") == .ping("tmi.twitch.tv"))
+        #expect(TwitchIRCParser.parse(":tmi.twitch.tv 001 justinfan1 :Welcome, GLHF!") == .other)
+        #expect(TwitchIRCParser.parse(":tmi.twitch.tv CAP * ACK :twitch.tv/tags") == .other)
+    }
+
+    @Test func timesLiveChatFromMonitoringStart() {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let parser = LiveChatLineParser(startedAt: start)
+        func line(_ seconds: Double) -> Data {
+            Data(#"{"message":"hi","timestamp":\#(Int((1_000_000 + seconds) * 1_000_000)),"author":{"name":"u"}}"#.utf8)
+        }
+        #expect(parser.parse(line(12.5))?.time == 12.5)
+        #expect(parser.parse(line(-0.5))?.time == 0)
+        #expect(parser.parse(line(-300)) == nil)
+    }
+
+    @Test func livePlansPickTheRightSources() throws {
+        let tools = ToolPaths()
+        let twitch = try IngestionPlanner.plan(stream: StreamURL.parse("twitch.tv/streamer")!, mode: .live, tools: tools, limitSeconds: nil)
+        #expect(twitch.chat is TwitchIRCChatSource)
+        #expect(twitch.transcript is LiveWhisperTranscriptSource)
+        let youtube = try IngestionPlanner.plan(stream: StreamURL.parse("youtu.be/dQw4w9WgXcQ")!, mode: .live, tools: tools, limitSeconds: nil)
+        #expect(youtube.chat is FallbackChatSource)
+        #expect(throws: ToolError.self) {
+            try IngestionPlanner.plan(stream: StreamURL.parse("twitch.tv/videos/5")!, mode: .live, tools: tools, limitSeconds: nil)
+        }
+    }
+}
+
+@Suite("YouTube live replay lines")
+struct LiveReplayTests {
+    @Test func timesLiveLinesFromTheirOwnClock() {
+        let start = Date(timeIntervalSince1970: 2_000_000)
+        func line(_ seconds: Double) -> Data {
+            Data(#"{"replayChatItemAction":{"actions":[{"addChatItemAction":{"item":{"liveChatTextMessageRenderer":{"timestampUsec":"\#(Int((2_000_000 + seconds) * 1_000_000))","authorName":{"simpleText":"@fan"},"message":{"runs":[{"text":"hi"}]}}}}}]}}"#.utf8)
+        }
+        #expect(YouTubeReplayParser.parse(line(7), liveStart: start) == [ChatMessage(time: 7, author: "@fan", text: "hi")])
+        #expect(YouTubeReplayParser.parse(line(-600), liveStart: start).isEmpty)
+        // Without liveStart a line with no video offset is not a recording's line.
+        #expect(YouTubeReplayParser.parse(line(7)).isEmpty)
     }
 }

@@ -21,14 +21,14 @@ struct StreamDetailView: View {
     }
 
     private var subtitle: String {
-        [session.platform.displayName, session.channel].filter { !$0.isEmpty }.joined(separator: " · ")
+        [session.platform.displayName, session.channel, session.mode == .live ? "Live" : ""].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     @ViewBuilder
     private func content(_ runtime: SessionRuntime) -> some View {
         VStack(spacing: 0) {
             if runtime.isRunning {
-                ProgressStrip(runtime: runtime) { model.cancel(session) }
+                ProgressStrip(runtime: runtime, stop: { model.cancel(session) })
                 Divider()
             }
             if let warning = runtime.warnings.first, !runtime.isRunning {
@@ -46,13 +46,17 @@ struct StreamDetailView: View {
             } else {
                 VSplitView {
                     ChartPane(runtime: runtime)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .frame(minHeight: 200, idealHeight: 300)
                     HSplitView {
                         SpikeListPane(runtime: runtime)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                             .frame(minWidth: 320, idealWidth: 440)
                         SpikeViewerPane(session: session, runtime: runtime)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                             .frame(minWidth: 360, idealWidth: 480)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .frame(minHeight: 240, idealHeight: 360)
                 }
             }
@@ -60,33 +64,64 @@ struct StreamDetailView: View {
         .toolbar {
             ToolbarItem {
                 if runtime.isRunning {
-                    Button("Stop", systemImage: "stop.fill") { model.cancel(session) }
-                        .help("Stop the download and keep what arrived")
+                    Button(session.mode == .live ? "Stop Monitoring" : "Stop", systemImage: "stop.fill") { model.cancel(session) }
+                        .help("Stop and keep what arrived")
                 } else {
-                    Button("Download Again", systemImage: "arrow.clockwise") { model.start(session) }
-                        .help("Download chat and transcript again (Command-R)")
+                    Button(session.mode == .live ? "Monitor Again" : "Download Again", systemImage: "arrow.clockwise") { model.restart(session) }
+                        .help(session.mode == .live ? "Start a new live session for this stream (Command-R)"
+                              : "Download chat and transcript again (Command-R)")
                 }
             }
         }
     }
 }
 
-/// What the two ingestion jobs are doing right now.
+/// What the two ingestion jobs are doing right now. A live run also shows how long it has run and its latest spike.
 struct ProgressStrip: View {
     let runtime: SessionRuntime
     let stop: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: Space.lg) {
-            VStack(spacing: Space.xs) {
-                line("Chat", status: runtime.chatStatus, fraction: runtime.chatFraction)
-                line("Transcript", status: transcriptStatus, fraction: runtime.transcriptFraction)
+        VStack(spacing: Space.sm) {
+            if let start = runtime.liveStart { liveHeader(start: start) }
+            HStack(alignment: .center, spacing: Space.lg) {
+                VStack(spacing: Space.xs) {
+                    line("Chat", status: runtime.chatStatus, fraction: runtime.isLive ? nil : runtime.chatFraction)
+                    line("Transcript", status: transcriptStatus, fraction: runtime.isLive ? nil : runtime.transcriptFraction)
+                }
+                Button("Stop", action: stop)
+                    .controlSize(.small)
             }
-            Button("Stop", action: stop)
-                .controlSize(.small)
         }
         .padding(.horizontal, Space.lg)
         .padding(.vertical, Space.sm)
+    }
+
+    private func liveHeader(start: Date) -> some View {
+        HStack(spacing: Space.sm) {
+            Text("LIVE")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, Space.sm)
+                .padding(.vertical, 2)
+                .background(Color.red, in: Capsule())
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(Timecode.string(context.date.timeIntervalSince(start)))
+                    .font(.callout.monospacedDigit())
+            }
+            Text("\(runtime.chat.count.formatted()) messages")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if let latest = runtime.latestSpike {
+                Button("Latest spike \(Timecode.string(latest.time)) · z \(String(format: "%.1f", latest.zScore))") {
+                    runtime.selectedSpikeID = latest.id
+                }
+                .controlSize(.small)
+            } else {
+                Text("No spikes yet").font(.callout).foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var transcriptStatus: String {

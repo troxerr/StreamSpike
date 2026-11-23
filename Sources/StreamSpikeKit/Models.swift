@@ -1,13 +1,12 @@
 import Foundation
 
 public enum Platform: String, Codable, CaseIterable, Sendable {
-    case youtube, twitch, kick
+    case youtube, twitch
 
     public var displayName: String {
         switch self {
         case .youtube: "YouTube"
         case .twitch: "Twitch"
-        case .kick: "Kick"
         }
     }
 }

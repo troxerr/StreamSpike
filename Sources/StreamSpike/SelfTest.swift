@@ -31,8 +31,12 @@ enum SelfTest {
             await linkChecks(model)
             await fakeToolPipeline(model)
             await cancelCheck(model)
+            await liveMonitor(model)
             if let url = ProcessInfo.processInfo.environment["SELFTEST_ONLINE"], !url.isEmpty {
                 await online(model, url: url)
+            }
+            if let url = ProcessInfo.processInfo.environment["SELFTEST_LIVE"], !url.isEmpty {
+                await onlineLive(model, url: url)
             }
             print(failures == 0 ? "SELFTEST PASS \(count) checks" : "SELFTEST FAIL \(failures) of \(count) checks")
             finish(code: failures == 0 ? 0 : 1)
@@ -65,7 +69,7 @@ enum SelfTest {
         }
 
         let failed = sessions.first { $0.status == .failed }
-        check("a failed stream keeps its reason", failed?.statusDetail.contains("Kick") == true)
+        check("a failed stream keeps its reason", failed?.statusDetail.contains("replay") == true)
 
         // Settings change the result without a download.
         var strict = SpikeSettings()
@@ -95,12 +99,15 @@ enum SelfTest {
 
     private static func linkChecks(_ model: AppModel) async {
         check("an invalid link is refused", model.addStream("https://example.com/nope", mode: .vod, limitMinutes: 0) == nil)
-        check("the refusal explains itself", model.alertMessage?.contains("YouTube, Twitch, or Kick") == true)
+        check("the refusal explains itself", model.alertMessage?.contains("YouTube or Twitch") == true)
         model.alertMessage = nil
-        check("Live Monitor is refused with a clear reason", {
+        check("Live Monitor accepts a Twitch channel link", {
             guard let url = StreamURL.parse("twitch.tv/somechannel") else { return false }
-            do { _ = try IngestionPlanner.plan(stream: url, mode: .live, tools: ToolPaths(), limitSeconds: nil); return false }
-            catch { return error.localizedDescription.contains("Live Monitor") }
+            return (try? IngestionPlanner.plan(stream: url, mode: .live, tools: ToolPaths(), limitSeconds: nil)) != nil
+        }())
+        check("Live Monitor refuses a recording link", {
+            guard let url = StreamURL.parse("twitch.tv/videos/123") else { return false }
+            return (try? IngestionPlanner.plan(stream: url, mode: .live, tools: ToolPaths(), limitSeconds: nil)) == nil
         }())
         check("a channel link is refused in VOD mode", {
             guard let url = StreamURL.parse("twitch.tv/somechannel") else { return false }
@@ -124,6 +131,7 @@ enum SelfTest {
         }
         let ytDlp = script("yt-dlp", """
         case "$*" in
+          *" -g "*) echo "http://fake.local/audio.m3u8"; exit 0;;
           *--dump-single-json*) echo '{"title":"Fake Stream","channel":"Fake Channel","duration":120,"is_live":false}'; exit 0;;
           *--skip-download*) exit 0;;
         esac
@@ -232,6 +240,96 @@ enum SelfTest {
             model.remove(session)
         }
         settings.resetPath(for: .chatDownloader)
+    }
+
+    /// Live Monitor with fake tools: chat timed from the start, live audio chunks transcribed as they complete,
+    /// the chart growing while it runs, and Stop keeping everything.
+    private static func liveMonitor(_ model: AppModel) async {
+        let folder = URL(fileURLWithPath: "/tmp/StreamSpike-selftest-tools")
+        func script(_ name: String, _ body: String) -> String {
+            let url = folder.appendingPathComponent(name)
+            try? ("#!/bin/sh\n" + body).write(to: url, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+            return url.path
+        }
+        // 3 old messages (before monitoring began), then a burst of 60 within a few seconds, then it keeps running.
+        let chat = script("chat_downloader_live", """
+        while [ $# -gt 0 ]; do if [ "$1" = "--output" ]; then out="$2"; fi; shift; done
+        now=$(date +%s)
+        for i in 1 2 3; do echo "{\\"message\\":\\"old $i\\",\\"timestamp\\":$(( (now - 600) ))000000,\\"author\\":{\\"name\\":\\"u\\"}}" >> "$out"; done
+        sleep 1
+        i=0; while [ $i -lt 60 ]; do echo "{\\"message\\":\\"KEKW $i\\",\\"timestamp\\":$(date +%s)000000,\\"author\\":{\\"name\\":\\"u\\"}}" >> "$out"; i=$((i+1)); sleep 0.05; done
+        exec sleep 120
+        """)
+        let ffmpeg = script("ffmpeg_live", """
+        for a; do last="$a"; done
+        dir=$(dirname "$last")
+        printf RIFF > "$dir/chunk_00000.wav"; sleep 1.2
+        printf RIFF > "$dir/chunk_00001.wav"; sleep 1.2
+        printf RIFF > "$dir/chunk_00002.wav"
+        exec sleep 120
+        """)
+        let settings = model.settings
+        let saved = settings.overrides
+        settings.setPath(chat, for: .chatDownloader)
+        settings.setPath(ffmpeg, for: .ffmpeg)
+        settings.setPath(folder.appendingPathComponent("yt-dlp").path, for: .ytDlp)
+        settings.setPath(folder.appendingPathComponent("whisper-cli").path, for: .whisperCLI)
+
+        guard let session = model.addStream("https://www.youtube.com/watch?v=lllllllllll", mode: .live, limitMinutes: 0) else {
+            check("live monitoring starts", false)
+            return
+        }
+        let runtime = model.runtime(for: session)
+        check("live monitoring starts", session.status == .running && session.mode == .live)
+        _ = await wait(seconds: 20) { runtime.chat.count >= 40 && runtime.transcript.count >= 2 }
+        check("a live run is marked live", runtime.isLive)
+        check("live chat streams in while running", runtime.chat.count >= 40, "\(runtime.chat.count)")
+        check("messages from before monitoring began are dropped", !runtime.chat.contains { $0.text.hasPrefix("old") })
+        check("live chat is timed from the start of monitoring", runtime.chat.allSatisfy { $0.time >= 0 && $0.time < 30 }, "\(runtime.chat.map(\.time).max() ?? -1)")
+        check("live audio chunks are transcribed as they complete", runtime.transcript.count >= 2, "\(runtime.transcript.count)")
+        check("live transcript is offset by the chunk length", runtime.transcript.contains { $0.start >= 20 && $0.start < 40 },
+              "\(runtime.transcript.map(\.start))")
+        check("the chart has buckets while live", !runtime.buckets.isEmpty, "\(runtime.buckets.count)")
+        let before = runtime.duration
+        _ = await wait(seconds: 12) { runtime.duration > before + 1 }
+        check("the chart keeps growing on a quiet live stream", runtime.duration > before + 1, "\(before) -> \(runtime.duration)")
+        model.cancel(session)
+        _ = await wait { session.status != .running }
+        check("stopping a live run completes it", session.status == .complete && session.statusDetail.contains("stopped"), "\(session.status): \(session.statusDetail)")
+        check("a live run saves what it watched", session.chatCount >= 40 && session.segmentCount >= 2, "\(session.chatCount) / \(session.segmentCount)")
+        check("a live run records how long it ran", session.duration > 3, "\(session.duration)")
+        check("live links carry no video time", model.timestampLink(session, runtime) == session.stream?.link())
+        let before2 = model.allSessions().count
+        model.restart(session)
+        _ = await wait(seconds: 5) { model.allSessions().count == before2 + 1 }
+        check("monitoring again makes a new session and keeps the old one", model.allSessions().count == before2 + 1 && session.chatCount >= 40)
+        if let fresh = model.allSessions().first(where: { $0.uuid != session.uuid && $0.mode == .live && $0.status == .running }) {
+            model.cancel(fresh)
+            _ = await wait { fresh.status != .running }
+            model.remove(fresh)
+        }
+        model.remove(session)
+        for dependency in Dependency.allCases { settings.setPath(saved[dependency.rawValue] ?? "", for: dependency) }
+    }
+
+    /// Monitors a real live stream for about a minute with the installed tools, and reports what arrived.
+    private static func onlineLive(_ model: AppModel, url: String) async {
+        print("LIVE monitoring \(url) for 70 s")
+        guard let session = model.addStream(url, mode: .live, limitMinutes: 0) else { check("live: link accepted", false); return }
+        let runtime = model.runtime(for: session)
+        for tick in 1...7 {
+            try? await Task.sleep(for: .seconds(10))
+            print("LIVE t=\(tick * 10)s chat=\(runtime.chat.count) (\(runtime.chatStatus)) transcript=\(runtime.transcript.count) (\(runtime.transcriptStatus)) buckets=\(runtime.buckets.count) spikes=\(runtime.spikes.count)")
+            if session.status == .failed { break }
+        }
+        for warning in runtime.warnings { print("LIVE warning: \(warning)") }
+        if let first = runtime.chat.first { print("LIVE first chat: \(first.time) \(first.author): \(first.text)") }
+        for segment in runtime.transcript.sorted(by: { $0.start < $1.start }).prefix(3) { print("LIVE speech \(Int(segment.start)) s: \(segment.text)") }
+        model.cancel(session)
+        _ = await wait { session.status != .running }
+        print("LIVE final status=\(session.status.rawValue) detail=\(session.statusDetail) chat=\(session.chatCount) segments=\(session.segmentCount) duration=\(Int(session.duration))")
+        check("live: chat arrived", session.chatCount > 0, session.statusDetail)
     }
 
     /// Each real stage on its own, so one broken tool does not hide the others.

@@ -17,6 +17,8 @@ said. It runs on this Mac only, with a local SwiftData database and no server.
 - `SpikeDetector` buckets chat (`Accumulator` adds only new messages on a live run), computes a rolling Z-score on single and paired buckets against a baseline that caps earlier spikes, and merges neighbouring flagged buckets.
   Live YouTube chat runs inside `ReconnectingChatSource` and live Whisper restarts ffmpeg itself, so a dropped connection does not end a run.
   `TranscriptPairing` attaches the T-30 s to T+15 s transcript window.
+- Live spike notifications: `SpikeAnnouncer` (Kit) picks a settled spike at most once per 45 s; `SpikeNotifier.swift` rings it and a click opens it.
+  Off in test and snapshot runs (`APP_STORE` set), where `SpikeNotifier.posted` only counts. Toggle: Settings > Detection > Live monitoring.
 - `ProcessRunner` runs every command line tool off the main thread and kills it when the task is cancelled.
 - `StreamSession` (SwiftData) stores chat, transcript, and spikes as compressed blobs (`SessionCodec`).
 - `AppModel` (Analysis.swift) runs the pipeline; `SessionRuntime` is what the screen reads while it fills.

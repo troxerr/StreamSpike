@@ -137,6 +137,13 @@ extension AppModel {
                 ? "Stream details were not available. Is the stream live?"
                 : "Stream details were not available, so the length is estimated from chat.")
         }
+        if isLive {
+            if settings.notifyLiveSpikes { SpikeNotifier.requestAuthorization() }
+            runtime.onPublish = { [weak self, weak session] in
+                guard let self, let session else { return }
+                self.announceSpikes(session, runtime, startedAt: startedAt)
+            }
+        }
         let knownDuration: Double? = !isLive && session.duration > 0 ? session.duration : nil
         runtime.duration = knownDuration ?? 0
         let duration: @MainActor () -> Double? = { isLive ? Date().timeIntervalSince(startedAt) : knownDuration }
@@ -187,6 +194,16 @@ extension AppModel {
         await finish(session, runtime, failure: failure, cancelled: cancelled, live: isLive)
     }
 
+    /// Rings for a settled spike of a live run, unless the person is already looking at that stream.
+    private func announceSpikes(_ session: StreamSession, _ runtime: SessionRuntime, startedAt: Date) {
+        guard runtime.isRunning else { return }
+        let size = Double(settings.detection.bucketSeconds)
+        guard let spike = runtime.announcer.next(spikes: runtime.spikes, elapsed: Date().timeIntervalSince(startedAt), bucketSeconds: size),
+              settings.notifyLiveSpikes else { return }
+        if NSApp.isActive, selection == session.uuid { return }
+        SpikeNotifier.post(spike: spike, session: session)
+    }
+
     private func consumeChat(_ source: any ChatSource, _ runtime: SessionRuntime, knownDuration: Double?) async throws {
         for try await event in source.stream() {
             switch event {
@@ -231,6 +248,7 @@ extension AppModel {
     /// Final analysis, then save. Keeps whatever arrived when a run is stopped.
     private func finish(_ session: StreamSession, _ runtime: SessionRuntime, failure: String?, cancelled: Bool, live: Bool) async {
         runtime.redetectTask?.cancel()
+        runtime.onPublish = nil
         let sorted = await Task.detached { [chat = runtime.chat] in chat.sorted { $0.time < $1.time } }.value
         runtime.chat = sorted
         if let failure, runtime.chat.isEmpty {

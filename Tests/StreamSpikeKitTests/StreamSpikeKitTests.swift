@@ -491,3 +491,54 @@ struct NeededToolsTests {
         #expect(Dependency.needed(for: vod, mode: .vod).contains(.chatDownloader))
     }
 }
+
+@Suite("Spike announcer")
+struct SpikeAnnouncerTests {
+    func spike(run: Double, end: Double, z: Double) -> Spike {
+        Spike(id: Int(run / 10), time: run, zScore: z, messageCount: 30, peakPerSecond: 3, topEmotes: [],
+              runStart: run, runEnd: end, transcriptPreview: "")
+    }
+
+    @Test func waitsForTheRunToEnd() {
+        var announcer = SpikeAnnouncer()
+        let growing = [spike(run: 100, end: 120, z: 4)]
+        // Chat is still busy in the latest bucket: no notification yet.
+        #expect(announcer.next(spikes: growing, elapsed: 125, bucketSeconds: 10) == nil)
+        #expect(announcer.next(spikes: growing, elapsed: 130, bucketSeconds: 10)?.runStart == 100)
+    }
+
+    @Test func announcesEachSpikeOnce() {
+        var announcer = SpikeAnnouncer()
+        let spikes = [spike(run: 100, end: 120, z: 4)]
+        #expect(announcer.next(spikes: spikes, elapsed: 200, bucketSeconds: 10) != nil)
+        #expect(announcer.next(spikes: spikes, elapsed: 400, bucketSeconds: 10) == nil)
+    }
+
+    @Test func aPeakThatMovesIsNotAnnouncedTwice() {
+        var announcer = SpikeAnnouncer()
+        _ = announcer.next(spikes: [spike(run: 100, end: 120, z: 4)], elapsed: 200, bucketSeconds: 10)
+        // The same run, later, with its peak on another bucket: same runStart, so it is the same spike.
+        var moved = spike(run: 100, end: 120, z: 5)
+        moved.id = 11
+        #expect(announcer.next(spikes: [moved], elapsed: 400, bucketSeconds: 10) == nil)
+    }
+
+    @Test func aBusyStreamRingsAtMostOncePerGap() {
+        var announcer = SpikeAnnouncer(minGap: 45)
+        let first = [spike(run: 100, end: 110, z: 4)]
+        #expect(announcer.next(spikes: first, elapsed: 130, bucketSeconds: 10) != nil)
+        // A second spike settles 20 s later: held back, and not queued for later either.
+        let both = first + [spike(run: 140, end: 150, z: 6)]
+        #expect(announcer.next(spikes: both, elapsed: 170, bucketSeconds: 10) == nil)
+        #expect(announcer.next(spikes: both, elapsed: 300, bucketSeconds: 10) == nil)
+        // A third, well after the gap, rings.
+        let three = both + [spike(run: 400, end: 410, z: 3)]
+        #expect(announcer.next(spikes: three, elapsed: 440, bucketSeconds: 10)?.runStart == 400)
+    }
+
+    @Test func picksTheStrongestOfSeveralSettledSpikes() {
+        var announcer = SpikeAnnouncer()
+        let spikes = [spike(run: 100, end: 110, z: 3), spike(run: 200, end: 210, z: 7)]
+        #expect(announcer.next(spikes: spikes, elapsed: 300, bucketSeconds: 10)?.runStart == 200)
+    }
+}

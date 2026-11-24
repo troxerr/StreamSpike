@@ -132,6 +132,14 @@ struct DetectionSettings: View {
             Text("A bucket is a spike when its Z-score is above the threshold and it holds at least the minimum number of messages. Z compares the bucket with the mean and deviation of the rolling baseline before it.")
         }
 
+        Section {
+            Toggle("Notify me about spikes while monitoring", isOn: $settings.notifyLiveSpikes)
+        } header: {
+            Text("Live monitoring")
+        } footer: {
+            Text("A notification rings once a spike has settled, at most once every 45 seconds, and not for the stream you are looking at. Click it to jump to the spike.")
+        }
+
         Section("Transcript window") {
             Stepper("Before the spike: \(Int(settings.detection.preRoll)) s", value: $settings.detection.preRoll, in: 5...120, step: 5)
             Stepper("After the spike: \(Int(settings.detection.postRoll)) s", value: $settings.detection.postRoll, in: 5...60, step: 5)

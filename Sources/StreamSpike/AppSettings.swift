@@ -10,12 +10,18 @@ final class AppSettings {
     private let persists = !Store.isOverridden
     private static let detectionKey = "detection.settings"
     private static let pathsKey = "tools.paths"
+    private static let notifyKey = "notify.liveSpikes"
 
     var detection: SpikeSettings {
         didSet {
             guard persists, let data = try? JSONEncoder().encode(detection) else { return }
             UserDefaults.standard.set(data, forKey: Self.detectionKey)
         }
+    }
+
+    /// Ring a notification when a live stream has a spike. Saved like the other settings.
+    var notifyLiveSpikes: Bool = true {
+        didSet { if persists { UserDefaults.standard.set(notifyLiveSpikes, forKey: Self.notifyKey) } }
     }
 
     /// Paths the person typed. A dependency with no entry uses its default.
@@ -30,6 +36,9 @@ final class AppSettings {
             detection = saved
         } else {
             detection = SpikeSettings()
+        }
+        if !Store.isOverridden, defaults.object(forKey: Self.notifyKey) != nil {
+            notifyLiveSpikes = defaults.bool(forKey: Self.notifyKey)
         }
         overrides = Store.isOverridden ? [:] : (defaults.dictionary(forKey: Self.pathsKey) as? [String: String] ?? [:])
         refresh()

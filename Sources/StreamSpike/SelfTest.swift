@@ -335,6 +335,8 @@ enum SelfTest {
         let ticks = ProcessInfo.processInfo.environment["SELFTEST_LIVE_TICKS"].flatMap(Int.init) ?? 7
         print("LIVE monitoring \(url) for \(ticks * 10) s")
         guard let session = model.addStream(url, mode: .live, limitMinutes: 0) else { check("live: link accepted", false); return }
+        // Nobody is looking at this stream, so a spike notification is not held back.
+        model.selection = nil
         let runtime = model.runtime(for: session)
         for tick in 1...max(1, ticks) {
             try? await Task.sleep(for: .seconds(10))
@@ -346,6 +348,7 @@ enum SelfTest {
         for segment in runtime.transcript.sorted(by: { $0.start < $1.start }).prefix(3) { print("LIVE speech \(Int(segment.start)) s: \(segment.text)") }
         model.cancel(session)
         _ = await wait { session.status != .running }
+        print("LIVE notifications decided: \(SpikeNotifier.posted)")
         print("LIVE final status=\(session.status.rawValue) detail=\(session.statusDetail) chat=\(session.chatCount) segments=\(session.segmentCount) duration=\(Int(session.duration))")
         check("live: chat arrived", session.chatCount > 0, session.statusDetail)
     }

@@ -2,6 +2,7 @@ import AppKit
 import SwiftData
 import SwiftUI
 import StreamSpikeKit
+import UserNotifications
 
 // StreamSpike
 //   StreamSpike                      the app
@@ -25,6 +26,11 @@ struct StreamSpikeApp: App {
                 .themed()
                 .overlay { if GridOverlay.enabled { GridOverlay() } }
                 .frame(minWidth: 1000, minHeight: 640)
+                .onReceive(NotificationCenter.default.publisher(for: .openSpikeFromNotification)) { note in
+                    guard let text = note.userInfo?["uuid"] as? String, let id = UUID(uuidString: text) else { return }
+                    model.selection = id
+                    if let spike = note.userInfo?["spike"] as? Int, let runtime = model.existingRuntime(id) { runtime.selectedSpikeID = spike }
+                }
         }
         .modelContainer(model.container)
         .defaultSize(width: 1280, height: 820)
@@ -97,8 +103,9 @@ struct StreamSpikeApp: App {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if !Store.isOverridden { UNUserNotificationCenter.current().delegate = self }
         // Started from a terminal, the process is not a foreground app yet.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
@@ -107,6 +114,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A tool may have been installed while the app was in the background.
     func applicationDidBecomeActive(_ notification: Notification) {
         AppSettings.shared.refresh()
+    }
+
+    /// A spike found while the app is in front of another stream still shows as a banner.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+
+    /// Clicking a notification opens the app on that spike.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        let info = response.notification.request.content.userInfo
+        let uuid = info["uuid"] as? String, spike = info["spike"] as? Int
+        await MainActor.run {
+            NSApp.activate()
+            var payload: [String: Any] = [:]
+            if let uuid { payload["uuid"] = uuid }
+            if let spike { payload["spike"] = spike }
+            NotificationCenter.default.post(name: .openSpikeFromNotification, object: nil, userInfo: payload)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

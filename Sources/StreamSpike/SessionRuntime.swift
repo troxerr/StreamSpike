@@ -33,6 +33,9 @@ final class SessionRuntime {
     @ObservationIgnored var redetectTask: Task<Void, Never>?
     @ObservationIgnored private var chatIsSorted = true
     @ObservationIgnored private var dirty = false
+    /// Called after every recompute. A live run uses it to notice new spikes.
+    @ObservationIgnored var onPublish: (() -> Void)?
+    @ObservationIgnored var announcer = SpikeAnnouncer()
     /// Chat bucketed so far. Live runs add only the new messages each second.
     @ObservationIgnored private var accumulator: SpikeDetector.Accumulator?
 
@@ -62,6 +65,8 @@ final class SessionRuntime {
         chatIsSorted = true
         dirty = false
         accumulator = nil
+        announcer = SpikeAnnouncer()
+        onPublish = nil
         phase = .idle
     }
 
@@ -155,6 +160,7 @@ final class SessionRuntime {
         spikes = analysis.spikes
         duration = max(wanted ?? 0, Double(buckets.count) * bucketSeconds)
         if let selectedSpikeID, !spikes.contains(where: { $0.id == selectedSpikeID }) { self.selectedSpikeID = nil }
+        onPublish?()
     }
 
     /// While an analysis runs: recompute about once a second when new data arrived.

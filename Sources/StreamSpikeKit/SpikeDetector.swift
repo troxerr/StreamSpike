@@ -188,7 +188,8 @@ public enum SpikeDetector {
             var last = i, peak = i
             while last + 1 < flagged.count, flagged[last + 1] {
                 last += 1
-                if buckets[last].z > buckets[peak].z { peak = last }
+                // The peak is the busiest bucket, not the highest pair score, which always lands on the later of two.
+                if buckets[last].score > buckets[peak].score { peak = last }
             }
             runs.append((i, last, peak))
             i = last + 1

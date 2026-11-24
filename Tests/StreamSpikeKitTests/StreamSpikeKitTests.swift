@@ -383,6 +383,14 @@ struct DetectorEdgeTests {
         #expect(!analysis.spikes.isEmpty)
     }
 
+    @Test func theSpikeSitsOnTheBusiestBucketOfItsRun() {
+        // 60 messages, then 45 in the next bucket: the pair score is highest on the second bucket, the peak is the first.
+        let messages = quiet(10) + burst(at: 300, count: 60) + burst(at: 310, count: 45)
+        let spikes = SpikeDetector.analyze(messages: messages, settings: SpikeSettings()).spikes
+        #expect(spikes.count == 1)
+        #expect(spikes.first?.time == 300)
+    }
+
     @Test func aSpikeEarlyInTheStreamIsFound() {
         let analysis = SpikeDetector.analyze(messages: quiet(1) + burst(at: 40, count: 80), settings: SpikeSettings())
         #expect(analysis.spikes.contains { $0.time == 40 })

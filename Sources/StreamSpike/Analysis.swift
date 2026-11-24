@@ -65,7 +65,7 @@ extension AppModel {
     func recoverInterrupted() {
         var changed = false
         for session in allSessions() where session.status == .running || session.status == .queued {
-            let hasData = session.chatData != nil
+            let hasData = compactChunks(of: session)
             if session.mode == .live {
                 session.status = hasData ? .complete : .failed
                 session.statusDetail = hasData ? "The app quit while monitoring. Kept what was saved." : "The app quit before anything was saved."
@@ -157,14 +157,13 @@ extension AppModel {
                 await runtime.refreshLoop(settings: { self.settings.detection }, knownDuration: duration, always: isLive)
             }
             defer { refresher.cancel() }
-            // A long live session is saved every minute, so a crash loses little.
+            // A live run saves what is new every 30 s, so a crash loses little and a long run does not slow down.
             let autosave = Task { [weak self] in
                 guard isLive else { return }
                 while !Task.isCancelled {
-                    // Saving compresses the whole chat, so a very long run saves less often.
-                    try? await Task.sleep(for: .seconds(runtime.chat.count > 100_000 ? 300 : 60))
+                    try? await Task.sleep(for: .seconds(30))
                     guard let self, !Task.isCancelled else { return }
-                    await self.persist(session, runtime)
+                    await self.autosave(session, runtime)
                 }
             }
             defer { autosave.cancel() }
@@ -274,6 +273,54 @@ extension AppModel {
         await persist(session, runtime)
     }
 
+    /// Saves only the chat that arrived since the last autosave, as one more chunk. The transcript and spikes are small
+    /// and are saved whole. `persist` folds the chunks into `chatData` when the run ends.
+    func autosave(_ session: StreamSession, _ runtime: SessionRuntime) async {
+        let from = min(runtime.savedChatCount, runtime.chat.count)
+        let fresh = Array(runtime.chat[from...])
+        let transcript = runtime.transcript, spikes = runtime.spikes
+        let blobs = await Task.detached {
+            (fresh.isEmpty ? nil : SessionCodec.encode(fresh), SessionCodec.encode(transcript), SessionCodec.encode(spikes))
+        }.value
+        // The run may have ended while this was encoding. Its final save has already written everything.
+        guard runtime.isRunning else { return }
+        if let chunk = blobs.0 {
+            context.insert(ChatChunk(sessionID: session.uuid, index: runtime.savedChunks, count: fresh.count, data: chunk))
+            runtime.savedChunks += 1
+            runtime.savedChatCount = from + fresh.count
+        }
+        session.transcriptData = blobs.1
+        session.spikesData = blobs.2
+        session.chatCount = runtime.savedChatCount
+        session.segmentCount = transcript.count
+        session.spikeCount = spikes.count
+        session.transcriptSource = runtime.transcriptSource
+        save()
+    }
+
+    func chunks(of id: UUID) -> [ChatChunk] {
+        let found = (try? context.fetch(FetchDescriptor<ChatChunk>(predicate: #Predicate { $0.sessionID == id }))) ?? []
+        return found.sorted { $0.index < $1.index }
+    }
+
+    func deleteChunks(of id: UUID) {
+        for chunk in chunks(of: id) { context.delete(chunk) }
+    }
+
+    /// Folds a session's chunks into `chatData`, sorted by time, and removes them. Returns false when nothing was saved.
+    @discardableResult
+    func compactChunks(of session: StreamSession) -> Bool {
+        let saved = chunks(of: session.uuid)
+        guard !saved.isEmpty else { return session.chatData != nil }
+        var chat = SessionCodec.decode([ChatMessage].self, from: session.chatData) ?? []
+        for chunk in saved { chat += SessionCodec.decode([ChatMessage].self, from: chunk.data) ?? [] }
+        chat.sort { $0.time < $1.time }
+        session.chatData = SessionCodec.encode(chat)
+        session.chatCount = chat.count
+        for chunk in saved { context.delete(chunk) }
+        return !chat.isEmpty
+    }
+
     /// Saves chat, transcript, and spikes as compressed blobs.
     func persist(_ session: StreamSession, _ runtime: SessionRuntime) async {
         let chat = runtime.chat, transcript = runtime.transcript, spikes = runtime.spikes
@@ -287,6 +334,9 @@ extension AppModel {
         session.segmentCount = transcript.count
         session.spikeCount = spikes.count
         session.transcriptSource = runtime.transcriptSource
+        deleteChunks(of: session.uuid)
+        runtime.savedChatCount = chat.count
+        runtime.savedChunks = 0
         save()
     }
 

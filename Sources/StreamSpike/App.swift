@@ -159,7 +159,7 @@ enum Store {
     }
 
     static func makeContainer() -> ModelContainer {
-        if let container = try? ModelContainer(for: StreamSession.self, configurations: ModelConfiguration(url: url)) {
+        if let container = try? ModelContainer(for: StreamSession.self, ChatChunk.self, configurations: ModelConfiguration(url: url)) {
             return container
         }
         // The database would not open. Keep the broken file beside it for a person to inspect, and start a new one.
@@ -169,7 +169,7 @@ enum Store {
             try? FileManager.default.moveItem(at: file, to: URL(fileURLWithPath: url.path + ".damaged-\(stamp)" + suffix))
         }
         do {
-            return try ModelContainer(for: StreamSession.self, configurations: ModelConfiguration(url: url))
+            return try ModelContainer(for: StreamSession.self, ChatChunk.self, configurations: ModelConfiguration(url: url))
         } catch {
             fatalError("Could not open the database at \(url.path): \(error)")
         }

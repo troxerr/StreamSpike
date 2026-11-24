@@ -21,6 +21,7 @@ said. It runs on this Mac only, with a local SwiftData database and no server.
   Off in test and snapshot runs (`APP_STORE` set), where `SpikeNotifier.posted` only counts. Toggle: Settings > Detection > Live monitoring.
 - `ProcessRunner` runs every command line tool off the main thread and kills it when the task is cancelled.
 - `StreamSession` (SwiftData) stores chat, transcript, and spikes as compressed blobs (`SessionCodec`).
+  A live run autosaves every 30 s: only the new chat, as a `ChatChunk`. The final save, and recovery at launch after a crash, fold the chunks back into `chatData`.
 - `AppModel` (Analysis.swift) runs the pipeline; `SessionRuntime` is what the screen reads while it fills.
 - Tool paths and detection settings: `AppSettings`, edited in Settings (Command-Comma).
 - `SELFTEST_ONLINE=<vod link> tools/selftest.sh` also runs the real installed tools on the start of one VOD.

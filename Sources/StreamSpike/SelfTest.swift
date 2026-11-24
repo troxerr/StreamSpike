@@ -45,6 +45,54 @@ enum SelfTest {
 
     // MARK: Checks
 
+    /// A live run saves new chat in chunks. A crash folds them back in, and a finished run does too.
+    private static func autosaveChecks(_ model: AppModel) async {
+        guard let url = StreamURL.parse("https://www.twitch.tv/chunked") else { return }
+        func messages(_ range: Range<Int>) -> [ChatMessage] { range.map { ChatMessage(time: Double($0), author: "a", text: "m\($0)") } }
+
+        let crashed = StreamSession(url: url, mode: .live, limitSeconds: 0)
+        crashed.status = .running
+        model.context.insert(crashed)
+        let live = model.runtime(for: crashed)
+        live.phase = .running
+        live.append(chat: messages(0..<50))
+        await model.autosave(crashed, live)
+        live.append(chat: messages(50..<100))
+        await model.autosave(crashed, live)
+        check("each autosave writes one chunk", model.chunks(of: crashed.uuid).count == 2, "\(model.chunks(of: crashed.uuid).count)")
+        check("an autosave counts what it saved", crashed.chatCount == 100, "\(crashed.chatCount)")
+        await model.autosave(crashed, live)
+        check("an autosave with nothing new writes nothing", model.chunks(of: crashed.uuid).count == 2)
+        live.append(chat: messages(100..<130))
+        await model.autosave(crashed, live)
+        check("a chunk holds only what is new", model.chunks(of: crashed.uuid).last?.count == 30)
+        live.phase = .idle
+        model.recoverInterrupted()
+        let recovered = SessionCodec.decode([ChatMessage].self, from: crashed.chatData) ?? []
+        check("recovery folds the chunks into the saved chat", recovered.count == 130 && recovered.map(\.time) == recovered.map(\.time).sorted(),
+              "\(recovered.count)")
+        check("recovery removes the chunks", model.chunks(of: crashed.uuid).isEmpty)
+        check("a crashed live run with chunks is kept", crashed.status == .complete, "\(crashed.status)")
+
+        let finished = StreamSession(url: url, mode: .live, limitSeconds: 0)
+        finished.status = .running
+        model.context.insert(finished)
+        let run = model.runtime(for: finished)
+        run.phase = .running
+        run.append(chat: messages(0..<40))
+        await model.autosave(finished, run)
+        run.append(chat: messages(40..<60))
+        run.phase = .finished
+        await model.autosave(finished, run)
+        check("a late autosave after the run ends writes nothing", model.chunks(of: finished.uuid).count == 1)
+        await model.persist(finished, run)
+        check("the final save keeps all the chat and drops the chunks",
+              (SessionCodec.decode([ChatMessage].self, from: finished.chatData)?.count ?? 0) == 60 && model.chunks(of: finished.uuid).isEmpty)
+
+        model.remove(crashed)
+        model.remove(finished)
+    }
+
     private static func seededStreams(_ model: AppModel) async {
         SeedData.insertSamples(into: model)
         let sessions = model.allSessions()
@@ -70,6 +118,7 @@ enum SelfTest {
             model.context.delete(empty)
             model.save()
         }
+        await autosaveChecks(model)
         check("reopening loads the chat", runtime.chat.count == twitch.chatCount && runtime.chat.count > 1000, "\(runtime.chat.count)")
         check("reopening loads the transcript", runtime.transcript.count == twitch.segmentCount)
         check("reopening rebuilds the chart buckets", runtime.buckets.count == 540, "\(runtime.buckets.count)")

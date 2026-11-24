@@ -36,6 +36,9 @@ final class SessionRuntime {
     /// Called after every recompute. A live run uses it to notice new spikes.
     @ObservationIgnored var onPublish: (() -> Void)?
     @ObservationIgnored var announcer = SpikeAnnouncer()
+    /// How many of `chat`'s first messages an autosave has already written. Chat only grows at the end while a run is live.
+    @ObservationIgnored var savedChatCount = 0
+    @ObservationIgnored var savedChunks = 0
     /// Chat bucketed so far. Live runs add only the new messages each second.
     @ObservationIgnored private var accumulator: SpikeDetector.Accumulator?
 
@@ -67,6 +70,8 @@ final class SessionRuntime {
         accumulator = nil
         announcer = SpikeAnnouncer()
         onPublish = nil
+        savedChatCount = 0
+        savedChunks = 0
         phase = .idle
     }
 

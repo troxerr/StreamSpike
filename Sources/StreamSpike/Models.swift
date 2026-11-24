@@ -49,6 +49,23 @@ final class StreamSession {
     }
 }
 
+/// A slice of a live run's chat, saved while monitoring so a long session never re-saves what it already wrote.
+/// At the end of a run (or at the next launch, after a crash) the chunks fold back into the session's `chatData`.
+@Model
+final class ChatChunk {
+    var sessionID: UUID = UUID()
+    var index: Int = 0
+    var count: Int = 0
+    @Attribute(.externalStorage) var data: Data?
+
+    init(sessionID: UUID, index: Int, count: Int, data: Data?) {
+        self.sessionID = sessionID
+        self.index = index
+        self.count = count
+        self.data = data
+    }
+}
+
 /// App-wide state that menus, toolbars, and views share.
 @Observable
 final class AppModel {
@@ -112,6 +129,7 @@ final class AppModel {
         runtimes[session.uuid]?.task?.cancel()
         runtimes[session.uuid] = nil
         if selection == session.uuid { selection = nil }
+        deleteChunks(of: session.uuid)
         context.delete(session)
         try? context.save()
     }

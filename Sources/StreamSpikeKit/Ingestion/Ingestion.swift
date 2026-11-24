@@ -98,10 +98,14 @@ public enum IngestionPlanner {
         case .twitch: chat = TwitchIRCChatSource(channel: stream.id, startedAt: startedAt)
         case .youtube:
             // chat_downloader is tried first, then yt-dlp's live chat downloader, which survives YouTube's page changes.
-            chat = FallbackChatSource(sources: [
-                ("chat_downloader", ChatDownloaderSource(executable: tools.path(for: .chatDownloader), url: stream.link(), liveStart: startedAt)),
-                ("yt-dlp", YtDlpChatSource(ytDlp: tools.path(for: .ytDlp), url: stream.link(), liveStart: startedAt)),
-            ])
+            // The whole chain restarts when it drops mid-stream.
+            let chatDownloader = tools.path(for: .chatDownloader), ytDlp = tools.path(for: .ytDlp), link = stream.link()
+            chat = ReconnectingChatSource {
+                FallbackChatSource(sources: [
+                    ("chat_downloader", ChatDownloaderSource(executable: chatDownloader, url: link, liveStart: startedAt)),
+                    ("yt-dlp", YtDlpChatSource(ytDlp: ytDlp, url: link, liveStart: startedAt)),
+                ])
+            }
         }
         let transcript = LiveWhisperTranscriptSource(
             ytDlp: tools.path(for: .ytDlp), ffmpeg: tools.path(for: .ffmpeg), whisperCLI: tools.path(for: .whisperCLI),

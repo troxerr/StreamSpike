@@ -28,7 +28,7 @@ public enum SpikeExport {
                 peakMessagesPerSecond: (spike.peakPerSecond * 100).rounded() / 100,
                 topEmotes: spike.topEmotes.map { "\($0.name) x\($0.count)" },
                 transcript: said,
-                url: timestamped ? stream.link(at: max(0, spike.time - settings.preRoll)) : stream.link())
+                url: timestamped ? stream.link(at: max(0, spike.windowStart(settings))) : stream.link())
         }
     }
 

@@ -160,7 +160,7 @@ struct SpikeViewerPane: View {
 
     private func buildRows(for spike: Spike) -> [Row] {
         let detection = model.settings.detection
-        let from = spike.time - detection.preRoll
+        let from = spike.windowStart(detection)
         let to = spike.time + detection.postRoll
         var built: [Row] = [Row(id: -1, kind: .marker, time: spike.time, author: "", text: "")]
         if filter != .chat {

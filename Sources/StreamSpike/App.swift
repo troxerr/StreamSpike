@@ -111,6 +111,15 @@ enum Store {
     }
 
     static func makeContainer() -> ModelContainer {
+        if let container = try? ModelContainer(for: StreamSession.self, configurations: ModelConfiguration(url: url)) {
+            return container
+        }
+        // The database would not open. Keep the broken file beside it for a person to inspect, and start a new one.
+        let stamp = Int(Date().timeIntervalSince1970)
+        for suffix in ["", "-wal", "-shm"] {
+            let file = URL(fileURLWithPath: url.path + suffix)
+            try? FileManager.default.moveItem(at: file, to: URL(fileURLWithPath: url.path + ".damaged-\(stamp)" + suffix))
+        }
         do {
             return try ModelContainer(for: StreamSession.self, configurations: ModelConfiguration(url: url))
         } catch {

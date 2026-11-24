@@ -189,3 +189,65 @@ public struct LiveChatLineParser: Sendable {
         return ChatMessage(time: max(0, time), author: raw.author?.name ?? "", text: text)
     }
 }
+
+// MARK: - Reconnecting
+
+/// Keeps a live chat source running. A source that drops after it has delivered messages is started again
+/// with a growing delay, and messages it repeats from its backlog are dropped. A source that fails before
+/// ever delivering a message fails the run at once, so "chat is turned off" still shows as an error.
+public struct ReconnectingChatSource: ChatSource {
+    public var make: @Sendable () -> any ChatSource
+    /// Failed attempts in a row before the run gives up.
+    public var maxFailures: Int
+    /// Seconds to wait after the nth failed attempt in a row.
+    public var delay: @Sendable (Int) -> Double
+
+    public init(maxFailures: Int = 6,
+                delay: @escaping @Sendable (Int) -> Double = { min(30, Double($0) * 3) },
+                make: @escaping @Sendable () -> any ChatSource) {
+        self.make = make
+        self.maxFailures = maxFailures
+        self.delay = delay
+    }
+
+    public func stream() -> AsyncThrowingStream<IngestEvent<ChatMessage>, Error> {
+        let source = self
+        return AsyncThrowingStream { continuation in
+            var seen = Set<String>()
+            var everProduced = false
+            var failures = 0
+            while true {
+                var produced = false
+                var lastError: Error?
+                do {
+                    for try await event in source.make().stream() {
+                        guard case .items(let batch) = event else {
+                            continuation.yield(event)
+                            continue
+                        }
+                        let fresh = batch.filter { seen.insert("\($0.time)|\($0.author)|\($0.text)").inserted }
+                        guard !fresh.isEmpty else { continue }
+                        produced = true
+                        continuation.yield(.items(fresh))
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    lastError = error
+                }
+                if !everProduced && !produced {
+                    throw lastError ?? ToolError("The chat source ended without any messages.")
+                }
+                everProduced = true
+                failures = produced ? 1 : failures + 1
+                guard failures <= source.maxFailures else {
+                    throw lastError ?? ToolError("Chat stopped and could not be reconnected.")
+                }
+                // Keep the duplicate filter small: a backlog never reaches back more than a few minutes.
+                if seen.count > 20_000 { seen.removeAll(keepingCapacity: true) }
+                continuation.yield(.status("Chat connection lost, reconnecting"))
+                try await Task.sleep(for: .seconds(source.delay(failures)))
+            }
+        }
+    }
+}

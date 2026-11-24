@@ -35,6 +35,11 @@ public struct Spike: Sendable, Hashable, Codable, Identifiable {
     public var runEnd: Double
     /// One line of what the streamer said around T. Filled in by `TranscriptPairing`.
     public var transcriptPreview: String
+
+    /// Where this spike's transcript window starts: `preRoll` before its run began, never before 0.
+    public func windowStart(_ settings: SpikeSettings) -> Double {
+        max(0, min(time, runStart) - settings.preRoll)
+    }
 }
 
 public struct SpikeAnalysis: Sendable {
@@ -53,6 +58,45 @@ public struct SpikeAnalysis: Sendable {
 public enum SpikeDetector {
     /// Floor for the deviation, so a silent chat that wakes up does not divide by zero.
     static let sigmaFloor = 1.0
+    /// ...and never less than this share of the mean, so a busy, steady chat needs a real jump to count.
+    static let relativeSigmaFloor = 0.15
+    /// A guard against a corrupt timestamp allocating a huge array: 200,000 buckets is 23 days at 10 s.
+    static let maxBuckets = 200_000
+
+    /// The bucket a message falls in, or nil for a time that cannot be charted.
+    static func bucketIndex(_ time: Double, size: Double) -> Int? {
+        guard time.isFinite, time >= 0 else { return nil }
+        let index = time / size
+        return index < Double(maxBuckets) ? Int(index) : nil
+    }
+
+    /// Z-scores of `values` against a rolling baseline of the `baseline` values before each one.
+    /// A value that would be flagged enters the baseline capped at the flag line, so one big spike
+    /// does not inflate the deviation and hide the next one.
+    static func zScores(_ values: [Double], baseline: Int, minHistory: Int, threshold: Double) -> [Double] {
+        var z = [Double](repeating: 0, count: values.count)
+        var kept = [Double](repeating: 0, count: values.count)
+        var sum = 0.0, sumSquares = 0.0
+        for i in values.indices {
+            let history = min(i, baseline)
+            var cap = Double.infinity
+            if history >= minHistory {
+                let mean = sum / Double(history)
+                let variance = max(0, sumSquares / Double(history) - mean * mean)
+                let sigma = max(variance.squareRoot(), sigmaFloor, mean * relativeSigmaFloor)
+                z[i] = (values[i] - mean) / sigma
+                cap = mean + threshold * sigma
+            }
+            kept[i] = min(values[i], cap)
+            sum += kept[i]
+            sumSquares += kept[i] * kept[i]
+            if i >= baseline {
+                sum -= kept[i - baseline]
+                sumSquares -= kept[i - baseline] * kept[i - baseline]
+            }
+        }
+        return z
+    }
 
     /// Buckets chat, scores each bucket against the rolling baseline before it, and flags spikes.
     /// `duration` pads the end with empty buckets so a quiet finish still shows on the chart.
@@ -62,8 +106,8 @@ public enum SpikeDetector {
 
         var counts: [Int] = []
         var scores: [Double] = []
-        for message in messages where message.time >= 0 {
-            let index = Int(message.time / size)
+        for message in messages {
+            guard let index = bucketIndex(message.time, size: size) else { continue }
             if index >= counts.count {
                 counts.append(contentsOf: repeatElement(0, count: index - counts.count + 1))
                 scores.append(contentsOf: repeatElement(0, count: index - scores.count + 1))
@@ -71,7 +115,7 @@ public enum SpikeDetector {
             counts[index] += 1
             scores[index] += matcher.weight(of: message.text)
         }
-        let wanted = duration.map { Int(($0 / size).rounded(.up)) } ?? 0
+        let wanted = duration.flatMap { $0.isFinite ? min(Int(($0 / size).rounded(.up)), maxBuckets) : nil } ?? 0
         if wanted > counts.count {
             counts.append(contentsOf: repeatElement(0, count: wanted - counts.count))
             scores.append(contentsOf: repeatElement(0, count: wanted - scores.count))
@@ -79,29 +123,21 @@ public enum SpikeDetector {
         guard !counts.isEmpty else { return .empty }
 
         let baseline = max(2, Int(Double(settings.baselineSeconds) / size))
-        let minHistory = min(baseline, 6)
-        var z = [Double](repeating: 0, count: counts.count)
-        var sum = 0.0, sumSquares = 0.0
-        for i in 0..<counts.count {
-            let history = min(i, baseline)
-            if history >= minHistory {
-                let mean = sum / Double(history)
-                let variance = max(0, sumSquares / Double(history) - mean * mean)
-                z[i] = (scores[i] - mean) / max(variance.squareRoot(), sigmaFloor)
-            }
-            sum += scores[i]
-            sumSquares += scores[i] * scores[i]
-            if i >= baseline {
-                let old = scores[i - baseline]
-                sum -= old
-                sumSquares -= old * old
-            }
+        let minHistory = min(baseline, 3)
+        let single = zScores(scores, baseline: baseline, minHistory: minHistory, threshold: settings.zThreshold)
+        // A burst that straddles two buckets is split in half. Scoring pairs of neighbours catches it.
+        let paired = scores.indices.map { $0 == 0 ? 0 : scores[$0] + scores[$0 - 1] }
+        let pairedZ = zScores(paired, baseline: baseline, minHistory: minHistory, threshold: settings.zThreshold)
+        let floor = settings.messageFloor
+        let z = scores.indices.map { i -> Double in
+            let pairCount = i == 0 ? 0 : counts[i] + counts[i - 1]
+            return max(counts[i] >= floor ? single[i] : min(single[i], 0), pairCount >= floor ? pairedZ[i] : min(pairedZ[i], 0))
         }
 
         let buckets = counts.indices.map {
             ChatBucket(index: $0, start: Double($0) * size, count: counts[$0], score: scores[$0], z: z[$0])
         }
-        let flagged = buckets.map { $0.z > settings.zThreshold && $0.count >= settings.minMessages }
+        let flagged = buckets.map { $0.z > settings.zThreshold }
 
         // Merge neighbouring flagged buckets into one spike that peaks at the highest Z.
         var runs: [(first: Int, last: Int, peak: Int)] = []
@@ -121,8 +157,8 @@ public enum SpikeDetector {
         for (r, run) in runs.enumerated() { for b in run.first...run.last { runOfBucket[b] = r } }
         var emoteCounts = [[String: Int]](repeating: [:], count: runs.count)
         if !runs.isEmpty {
-            for message in messages where message.time >= 0 {
-                guard let r = runOfBucket[Int(message.time / size)] else { continue }
+            for message in messages {
+                guard let index = bucketIndex(message.time, size: size), let r = runOfBucket[index] else { continue }
                 for name in matcher.emotes(in: message.text) { emoteCounts[r][name, default: 0] += 1 }
             }
         }

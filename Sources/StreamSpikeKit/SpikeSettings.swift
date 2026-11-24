@@ -36,6 +36,9 @@ public struct SpikeSettings: Codable, Equatable, Sendable {
 
     public init() {}
 
+    /// `minMessages` is a count per 10 s of chat. It scales with the bucket width, so a 60 s bucket needs 60.
+    public var messageFloor: Int { max(1, Int((Double(minMessages) * Double(max(1, bucketSeconds)) / 10).rounded())) }
+
     public static let zRange = 1.0...6.0
     public static let minMessagesRange = 1...100
     public static let bucketOptions = [5, 10, 15, 30, 60]

@@ -20,9 +20,9 @@ public enum TranscriptPairing {
         return result
     }
 
-    /// The spike's own window: `T - preRoll` to `T + postRoll`.
+    /// The spike's own window: `preRoll` before where the spike's run began, to `postRoll` after its peak T. For a one-bucket spike that is T - preRoll to T + postRoll.
     public static func window(_ segments: [TranscriptSegment], around spike: Spike, settings: SpikeSettings) -> [TranscriptSegment] {
-        window(segments, from: spike.time - settings.preRoll, to: spike.time + settings.postRoll)
+        window(segments, from: spike.windowStart(settings), to: spike.time + settings.postRoll)
     }
 
     /// Fills in `transcriptPreview` for every spike.

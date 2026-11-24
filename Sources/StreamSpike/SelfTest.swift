@@ -54,6 +54,22 @@ enum SelfTest {
 
         let runtime = model.runtime(for: twitch)
         await model.prepare(twitch)
+        // A crash leaves sessions marked running. Opening the app again must not leave them spinning.
+        if let url = StreamURL.parse("https://www.twitch.tv/crashed") {
+            let stale = StreamSession(url: url, mode: .live, limitSeconds: 0)
+            stale.status = .running
+            stale.chatData = SessionCodec.encode([ChatMessage(time: 1, author: "a", text: "hi")])
+            let empty = StreamSession(url: url, mode: .live, limitSeconds: 0)
+            empty.status = .running
+            model.context.insert(stale)
+            model.context.insert(empty)
+            model.recoverInterrupted()
+            check("an interrupted run with saved chat is kept as complete", stale.status == .complete, "\(stale.status)")
+            check("an interrupted run with nothing saved is marked failed", empty.status == .failed, "\(empty.status)")
+            model.context.delete(stale)
+            model.context.delete(empty)
+            model.save()
+        }
         check("reopening loads the chat", runtime.chat.count == twitch.chatCount && runtime.chat.count > 1000, "\(runtime.chat.count)")
         check("reopening loads the transcript", runtime.transcript.count == twitch.segmentCount)
         check("reopening rebuilds the chart buckets", runtime.buckets.count == 540, "\(runtime.buckets.count)")

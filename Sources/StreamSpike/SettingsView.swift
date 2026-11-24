@@ -123,7 +123,7 @@ struct DetectionSettings: View {
     var body: some View {
         Section {
             slider("Z-score threshold", value: $settings.detection.zThreshold, range: 1...6, step: 0.1, text: String(format: "%.1f", settings.detection.zThreshold))
-            slider("Minimum messages per bucket", value: intBinding(\.minMessages), range: 1...100, step: 1, text: "\(settings.detection.minMessages)")
+            slider("Minimum messages per 10 s", value: intBinding(\.minMessages), range: 1...100, step: 1, text: "\(settings.detection.minMessages)")
             slider("Bucket size", value: intBinding(\.bucketSeconds), range: 5...60, step: 5, text: "\(settings.detection.bucketSeconds) s")
             slider("Rolling baseline", value: minutesBinding, range: 1...15, step: 1, text: "\(settings.detection.baselineSeconds / 60) min")
         } header: {

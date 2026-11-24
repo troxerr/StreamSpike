@@ -63,7 +63,7 @@ struct ChartPane: View {
         let postRoll = model.settings.detection.postRoll
         return Chart {
             if let spike = runtime.selectedSpike {
-                RectangleMark(xStart: .value("Window start", max(0, spike.time - preRoll)),
+                RectangleMark(xStart: .value("Window start", max(0, spike.runStart - preRoll)),
                               xEnd: .value("Window end", spike.time + postRoll))
                     .foregroundStyle(Palette.accent.opacity(0.10))
             }

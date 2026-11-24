@@ -264,7 +264,7 @@ struct LiveChatTests {
         #expect(twitch.chat is TwitchIRCChatSource)
         #expect(twitch.transcript is LiveWhisperTranscriptSource)
         let youtube = try IngestionPlanner.plan(stream: StreamURL.parse("youtu.be/dQw4w9WgXcQ")!, mode: .live, tools: tools, limitSeconds: nil)
-        #expect(youtube.chat is FallbackChatSource)
+        #expect(youtube.chat is ReconnectingChatSource)
         #expect(throws: ToolError.self) {
             try IngestionPlanner.plan(stream: StreamURL.parse("twitch.tv/videos/5")!, mode: .live, tools: tools, limitSeconds: nil)
         }
@@ -282,5 +282,127 @@ struct LiveReplayTests {
         #expect(YouTubeReplayParser.parse(line(-600), liveStart: start).isEmpty)
         // Without liveStart a line with no video offset is not a recording's line.
         #expect(YouTubeReplayParser.parse(line(7)).isEmpty)
+    }
+}
+
+/// A chat source that plays back a script: each attempt delivers its messages, then ends or fails.
+private final class ScriptedChat: ChatSource, @unchecked Sendable {
+    enum Step { case messages([ChatMessage], fail: Bool) }
+    private let lock = NSLock()
+    private var steps: [Step]
+    private(set) var attempts = 0
+
+    init(_ steps: [Step]) { self.steps = steps }
+
+    func stream() -> AsyncThrowingStream<IngestEvent<ChatMessage>, Error> {
+        let step: Step? = lock.withLock {
+            attempts += 1
+            return steps.isEmpty ? nil : steps.removeFirst()
+        }
+        return AsyncThrowingStream { continuation in
+            guard case .messages(let batch, let fail)? = step else { throw ToolError("no more script") }
+            if !batch.isEmpty { continuation.yield(.items(batch)) }
+            if fail { throw ToolError("dropped") }
+        }
+    }
+}
+
+@Suite("Reconnecting live chat")
+struct ReconnectTests {
+    func message(_ time: Double, _ text: String) -> ChatMessage { ChatMessage(time: time, author: "a", text: text) }
+
+    func collect(_ source: ReconnectingChatSource) async throws -> [ChatMessage] {
+        var all: [ChatMessage] = []
+        for try await event in source.stream() {
+            if case .items(let batch) = event { all += batch }
+        }
+        return all
+    }
+
+    @Test func reconnectsAfterADropAndDropsRepeatedBacklog() async throws {
+        let first = [message(1, "a"), message(2, "b")]
+        let second = [message(2, "b"), message(3, "c")]
+        let script = ScriptedChat([.messages(first, fail: true), .messages(second, fail: false), .messages([], fail: false)])
+        let source = ReconnectingChatSource(maxFailures: 1, delay: { _ in 0 }) { script }
+        // The third attempt delivers nothing, which counts as the one allowed failure and then ends the run.
+        var got: [ChatMessage] = []
+        do {
+            for try await event in source.stream() { if case .items(let batch) = event { got += batch } }
+        } catch {}
+        #expect(got.map(\.text) == ["a", "b", "c"])
+        #expect(script.attempts == 3)
+    }
+
+    @Test func aSourceThatNeverDeliversFailsAtOnce() async {
+        let script = ScriptedChat([.messages([], fail: true)])
+        let source = ReconnectingChatSource(maxFailures: 3, delay: { _ in 0 }) { script }
+        await #expect(throws: ToolError.self) { _ = try await collect(source) }
+        #expect(script.attempts == 1)
+    }
+
+    @Test func givesUpAfterTooManyFailuresInARow() async {
+        var steps: [ScriptedChat.Step] = [.messages([message(1, "a")], fail: true)]
+        steps += Array(repeating: .messages([], fail: true), count: 10)
+        let script = ScriptedChat(steps)
+        let source = ReconnectingChatSource(maxFailures: 2, delay: { _ in 0 }) { script }
+        await #expect(throws: ToolError.self) { _ = try await collect(source) }
+        #expect(script.attempts == 3)
+    }
+}
+
+@Suite("Detector edge cases")
+struct DetectorEdgeTests {
+    func quiet(_ minutes: Int) -> [ChatMessage] {
+        (0..<(minutes * 60)).flatMap { t in (0..<2).map { ChatMessage(time: Double(t) + Double($0) / 2, author: "q", text: "hi") } }
+    }
+
+    func burst(at time: Double, count: Int) -> [ChatMessage] {
+        (0..<count).map { ChatMessage(time: time + Double($0) * 10 / Double(count), author: "b", text: "KEKW") }
+    }
+
+    @Test func badTimestampsAreIgnored() {
+        let bad = [ChatMessage(time: .nan, author: "", text: "x"), ChatMessage(time: .infinity, author: "", text: "x"),
+                   ChatMessage(time: 1e15, author: "", text: "x"), ChatMessage(time: -5, author: "", text: "x")]
+        let analysis = SpikeDetector.analyze(messages: bad, settings: SpikeSettings(), duration: .nan)
+        #expect(analysis.buckets.isEmpty)
+        #expect(SpikeDetector.analyze(messages: [], settings: SpikeSettings()).spikes.isEmpty)
+    }
+
+    @Test func aSecondSpikeAfterABigOneIsStillFound() {
+        let messages = quiet(12) + burst(at: 300, count: 400) + burst(at: 400, count: 60)
+        let spikes = SpikeDetector.analyze(messages: messages, settings: SpikeSettings()).spikes
+        #expect(spikes.contains { $0.time == 300 })
+        #expect(spikes.contains { $0.time == 400 })
+    }
+
+    @Test func aBurstSplitAcrossTwoBucketsIsFound() {
+        // 14 messages per bucket is 28 in all: neither half clears the floor of 10 by much, but together they stand out.
+        let split = (0..<14).map { ChatMessage(time: 305 + Double($0) * 0.7, author: "b", text: "KEKW") }
+            + (0..<14).map { ChatMessage(time: 310.5 + Double($0) * 0.3, author: "b", text: "KEKW") }
+        let analysis = SpikeDetector.analyze(messages: quiet(10) + split, settings: SpikeSettings())
+        #expect(!analysis.spikes.isEmpty)
+    }
+
+    @Test func aSpikeEarlyInTheStreamIsFound() {
+        let analysis = SpikeDetector.analyze(messages: quiet(1) + burst(at: 40, count: 80), settings: SpikeSettings())
+        #expect(analysis.spikes.contains { $0.time == 40 })
+    }
+
+    @Test func messageFloorScalesWithTheBucket() {
+        var settings = SpikeSettings()
+        settings.bucketSeconds = 60
+        #expect(settings.messageFloor == 60)
+        settings.bucketSeconds = 5
+        #expect(settings.messageFloor == 5)
+    }
+
+    @Test func windowStartsBeforeTheWholeRun() {
+        var settings = SpikeSettings()
+        settings.preRoll = 30
+        let spike = Spike(id: 1, time: 500, zScore: 4, messageCount: 50, peakPerSecond: 5, topEmotes: [],
+                          runStart: 470, runEnd: 520, transcriptPreview: "")
+        #expect(spike.windowStart(settings) == 440)
+        let segments = [TranscriptSegment(start: 445, end: 450, text: "early"), TranscriptSegment(start: 520, end: 530, text: "late")]
+        #expect(TranscriptPairing.window(segments, around: spike, settings: settings).map(\.text) == ["early"])
     }
 }

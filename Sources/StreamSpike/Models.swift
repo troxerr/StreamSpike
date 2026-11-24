@@ -69,6 +69,7 @@ final class AppModel {
 
     init(container: ModelContainer) {
         self.container = container
+        recoverInterrupted()
     }
 
     var context: ModelContext { container.mainContext }

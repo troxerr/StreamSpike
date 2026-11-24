@@ -23,10 +23,36 @@ extension AppModel {
         }
         let session = StreamSession(url: url, mode: mode, limitSeconds: Double(max(0, limitMinutes)) * 60)
         context.insert(session)
-        try? context.save()
+        save()
         selection = session.uuid
         start(session)
         return session
+    }
+
+    /// Saves, and says so when the database refuses, instead of losing the change quietly.
+    func save() {
+        do {
+            try context.save()
+        } catch {
+            alertMessage = "Could not save to the database: \(error.localizedDescription)"
+        }
+    }
+
+    /// Sessions left `.running` by a crash or a force quit have no task behind them. Keep what was last saved.
+    func recoverInterrupted() {
+        var changed = false
+        for session in allSessions() where session.status == .running || session.status == .queued {
+            let hasData = session.chatData != nil
+            if session.mode == .live {
+                session.status = hasData ? .complete : .failed
+                session.statusDetail = hasData ? "The app quit while monitoring. Kept what was saved." : "The app quit before anything was saved."
+            } else {
+                session.status = hasData ? .cancelled : .failed
+                session.statusDetail = hasData ? "The app quit during the download. Kept what was saved." : "The app quit during the download."
+            }
+            changed = true
+        }
+        if changed { save() }
     }
 
     // MARK: Running
@@ -150,6 +176,10 @@ extension AppModel {
         }
         runtime.chatFraction = 1
         runtime.chatStatus = "\(runtime.chat.count.formatted()) messages"
+        // A download that stopped early looks like a quiet stretch. Say so when chat ends well before the video does.
+        if let knownDuration, knownDuration > 0, !Task.isCancelled, runtime.chatReach < knownDuration * 0.7 {
+            runtime.warnings.append("Chat ends at \(Timecode.string(runtime.chatReach)) but the video runs to \(Timecode.string(knownDuration)). The rest may be missing. Try Download Again.")
+        }
     }
 
     /// A transcript that cannot be found is a warning, not a failure: the chart and spikes still work.
@@ -183,7 +213,7 @@ extension AppModel {
             runtime.phase = .failed(failure)
             session.status = .failed
             session.statusDetail = failure
-            try? context.save()
+            save()
             return
         }
         // A live run ends at the moment it stopped.
@@ -215,7 +245,7 @@ extension AppModel {
         session.segmentCount = transcript.count
         session.spikeCount = spikes.count
         session.transcriptSource = runtime.transcriptSource
-        try? context.save()
+        save()
     }
 
     /// Settings changed: find spikes again from the saved chat, without downloading anything.
@@ -230,7 +260,7 @@ extension AppModel {
             guard !Task.isCancelled else { return }
             session.spikeCount = runtime.spikes.count
             session.spikesData = SessionCodec.encode(runtime.spikes)
-            try? self.context.save()
+            self.save()
         }
     }
 
@@ -241,7 +271,7 @@ extension AppModel {
         guard let stream = session.stream else { return nil }
         // A live session's times count from when monitoring began, so they say nothing about the video.
         guard let spike = runtime.selectedSpike, session.mode == .vod else { return stream.link() }
-        return stream.link(at: max(0, spike.time - settings.detection.preRoll))
+        return stream.link(at: max(0, spike.windowStart(settings.detection)))
     }
 
     func copyLink(_ session: StreamSession, _ runtime: SessionRuntime) {

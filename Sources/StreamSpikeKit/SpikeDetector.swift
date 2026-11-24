@@ -98,23 +98,64 @@ public enum SpikeDetector {
         return z
     }
 
+    /// Bucket counts and scores that grow as chat arrives, so a live run only buckets the new messages
+    /// instead of reading the whole chat again every second. Valid for one bucket width and one keyword list.
+    public struct Accumulator: Sendable {
+        public private(set) var counts: [Int] = []
+        public private(set) var scores: [Double] = []
+        /// Messages added so far.
+        public private(set) var consumed = 0
+        let size: Double
+        let matcher: KeywordMatcher
+        private let signature: String
+
+        public init(settings: SpikeSettings) {
+            size = Double(max(1, settings.bucketSeconds))
+            matcher = KeywordMatcher(settings.hypeKeywords)
+            signature = Accumulator.signature(settings)
+        }
+
+        static func signature(_ settings: SpikeSettings) -> String {
+            "\(settings.bucketSeconds)|" + settings.hypeKeywords.map { "\($0.word):\($0.weight)" }.joined(separator: ",")
+        }
+
+        /// False once the bucket width or the keywords changed: start a new accumulator.
+        public func isValid(for settings: SpikeSettings) -> Bool { signature == Accumulator.signature(settings) }
+
+        public mutating func add(_ messages: ArraySlice<ChatMessage>) {
+            consumed += messages.count
+            for message in messages {
+                guard let index = SpikeDetector.bucketIndex(message.time, size: size) else { continue }
+                if index >= counts.count {
+                    counts.append(contentsOf: repeatElement(0, count: index - counts.count + 1))
+                    scores.append(contentsOf: repeatElement(0, count: index - scores.count + 1))
+                }
+                counts[index] += 1
+                scores[index] += matcher.weight(of: message.text)
+            }
+        }
+
+        public mutating func add(_ messages: [ChatMessage]) { add(messages[...]) }
+    }
+
     /// Buckets chat, scores each bucket against the rolling baseline before it, and flags spikes.
     /// `duration` pads the end with empty buckets so a quiet finish still shows on the chart.
     public static func analyze(messages: [ChatMessage], settings: SpikeSettings, duration: Double? = nil) -> SpikeAnalysis {
-        let size = Double(max(1, settings.bucketSeconds))
-        let matcher = KeywordMatcher(settings.hypeKeywords)
-
-        var counts: [Int] = []
-        var scores: [Double] = []
-        for message in messages {
-            guard let index = bucketIndex(message.time, size: size) else { continue }
-            if index >= counts.count {
-                counts.append(contentsOf: repeatElement(0, count: index - counts.count + 1))
-                scores.append(contentsOf: repeatElement(0, count: index - scores.count + 1))
-            }
-            counts[index] += 1
-            scores[index] += matcher.weight(of: message.text)
+        var accumulator = Accumulator(settings: settings)
+        accumulator.add(messages)
+        return detect(accumulator, settings: settings, duration: duration) { from, to in
+            messages.filter { $0.time >= from && $0.time < to }
         }
+    }
+
+    /// Flags spikes in already-bucketed chat. `messagesIn` returns the messages in `from..<to`, which is only
+    /// needed to name the top emotes of the spikes that were found.
+    public static func detect(_ accumulator: Accumulator, settings: SpikeSettings, duration: Double? = nil,
+                              messagesIn: (Double, Double) -> [ChatMessage]) -> SpikeAnalysis {
+        let size = accumulator.size
+        let matcher = accumulator.matcher
+        var counts = accumulator.counts
+        var scores = accumulator.scores
         let wanted = duration.flatMap { $0.isFinite ? min(Int(($0 / size).rounded(.up)), maxBuckets) : nil } ?? 0
         if wanted > counts.count {
             counts.append(contentsOf: repeatElement(0, count: wanted - counts.count))
@@ -153,12 +194,9 @@ public enum SpikeDetector {
             i = last + 1
         }
 
-        var runOfBucket: [Int: Int] = [:]
-        for (r, run) in runs.enumerated() { for b in run.first...run.last { runOfBucket[b] = r } }
         var emoteCounts = [[String: Int]](repeating: [:], count: runs.count)
-        if !runs.isEmpty {
-            for message in messages {
-                guard let index = bucketIndex(message.time, size: size), let r = runOfBucket[index] else { continue }
+        for (r, run) in runs.enumerated() {
+            for message in messagesIn(Double(run.first) * size, Double(run.last + 1) * size) {
                 for name in matcher.emotes(in: message.text) { emoteCounts[r][name, default: 0] += 1 }
             }
         }

@@ -406,3 +406,30 @@ struct DetectorEdgeTests {
         #expect(TranscriptPairing.window(segments, around: spike, settings: settings).map(\.text) == ["early"])
     }
 }
+
+@Suite("Incremental bucketing")
+struct AccumulatorTests {
+    @Test func addingInPiecesMatchesAnalyzingAtOnce() {
+        var messages: [ChatMessage] = []
+        for t in 0..<600 { for _ in 0..<2 { messages.append(ChatMessage(time: Double(t), author: "q", text: "hi")) } }
+        messages += (0..<80).map { ChatMessage(time: 400 + Double($0) / 8, author: "b", text: "KEKW") }
+        messages.sort { $0.time < $1.time }
+        let settings = SpikeSettings()
+        let whole = SpikeDetector.analyze(messages: messages, settings: settings, duration: 600)
+
+        var acc = SpikeDetector.Accumulator(settings: settings)
+        for start in stride(from: 0, to: messages.count, by: 137) {
+            acc.add(messages[start..<min(messages.count, start + 137)])
+        }
+        let pieces = SpikeDetector.detect(acc, settings: settings, duration: 600) { from, to in
+            messages.filter { $0.time >= from && $0.time < to }
+        }
+        #expect(acc.consumed == messages.count)
+        #expect(pieces.buckets == whole.buckets)
+        #expect(pieces.spikes == whole.spikes)
+        #expect(!whole.spikes.isEmpty)
+        var other = settings
+        other.bucketSeconds = 30
+        #expect(!acc.isValid(for: other))
+    }
+}

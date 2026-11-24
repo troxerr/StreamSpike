@@ -33,6 +33,8 @@ final class SessionRuntime {
     @ObservationIgnored var redetectTask: Task<Void, Never>?
     @ObservationIgnored private var chatIsSorted = true
     @ObservationIgnored private var dirty = false
+    /// Chat bucketed so far. Live runs add only the new messages each second.
+    @ObservationIgnored private var accumulator: SpikeDetector.Accumulator?
 
     var isRunning: Bool { phase == .running }
     var isLive: Bool { liveStart != nil }
@@ -59,6 +61,7 @@ final class SessionRuntime {
         liveStart = nil
         chatIsSorted = true
         dirty = false
+        accumulator = nil
         phase = .idle
     }
 
@@ -116,13 +119,35 @@ final class SessionRuntime {
         let chat = chat, transcript = transcript.sorted { $0.start < $1.start }
         let wanted = knownDuration ?? (chat.last?.time).map { $0 + 1 }
         dirty = false
-        let analysis = await Task.detached(priority: .userInitiated) {
-            let raw = SpikeDetector.analyze(messages: chat, settings: settings, duration: wanted)
-            return SpikeAnalysis(buckets: raw.buckets,
-                                 spikes: TranscriptPairing.attach(transcript, to: raw.spikes, settings: settings))
+        var accumulator = accumulator
+        if let current = accumulator, !current.isValid(for: settings) || current.consumed > chat.count { accumulator = nil }
+        let previous = accumulator
+        let sorted = chatIsSorted
+        let result = await Task.detached(priority: .userInitiated) {
+            var acc = previous ?? SpikeDetector.Accumulator(settings: settings)
+            acc.add(chat[acc.consumed...])
+            let raw = SpikeDetector.detect(acc, settings: settings, duration: wanted) { from, to in
+                sorted ? SessionRuntime.slice(chat, from: from, to: to) : chat.filter { $0.time >= from && $0.time < to }
+            }
+            let analysis = SpikeAnalysis(buckets: raw.buckets,
+                                         spikes: TranscriptPairing.attach(transcript, to: raw.spikes, settings: settings))
+            return (acc, analysis)
         }.value
         guard !Task.isCancelled else { return }
-        publish(analysis, duration: wanted, bucketSeconds: Double(settings.bucketSeconds))
+        self.accumulator = result.0
+        publish(result.1, duration: wanted, bucketSeconds: Double(settings.bucketSeconds))
+    }
+
+    /// The messages in `from..<to` of a chat sorted by time.
+    nonisolated static func slice(_ chat: [ChatMessage], from: Double, to: Double) -> [ChatMessage] {
+        var low = 0, high = chat.count
+        while low < high {
+            let mid = (low + high) / 2
+            if chat[mid].time < from { low = mid + 1 } else { high = mid }
+        }
+        var end = low
+        while end < chat.count, chat[end].time < to { end += 1 }
+        return Array(chat[low..<end])
     }
 
     private func publish(_ analysis: SpikeAnalysis, duration wanted: Double?, bucketSeconds: Double) {

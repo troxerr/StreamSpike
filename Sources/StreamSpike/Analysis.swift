@@ -131,7 +131,8 @@ extension AppModel {
             let autosave = Task { [weak self] in
                 guard isLive else { return }
                 while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(60))
+                    // Saving compresses the whole chat, so a very long run saves less often.
+                    try? await Task.sleep(for: .seconds(runtime.chat.count > 100_000 ? 300 : 60))
                     guard let self, !Task.isCancelled else { return }
                     await self.persist(session, runtime)
                 }

@@ -331,10 +331,12 @@ enum SelfTest {
 
     /// Monitors a real live stream for about a minute with the installed tools, and reports what arrived.
     private static func onlineLive(_ model: AppModel, url: String) async {
-        print("LIVE monitoring \(url) for 70 s")
+        // SELFTEST_LIVE_TICKS=<n> watches for n x 10 s, long enough to break the tools on purpose and see the run recover.
+        let ticks = ProcessInfo.processInfo.environment["SELFTEST_LIVE_TICKS"].flatMap(Int.init) ?? 7
+        print("LIVE monitoring \(url) for \(ticks * 10) s")
         guard let session = model.addStream(url, mode: .live, limitMinutes: 0) else { check("live: link accepted", false); return }
         let runtime = model.runtime(for: session)
-        for tick in 1...7 {
+        for tick in 1...max(1, ticks) {
             try? await Task.sleep(for: .seconds(10))
             print("LIVE t=\(tick * 10)s chat=\(runtime.chat.count) (\(runtime.chatStatus)) transcript=\(runtime.transcript.count) (\(runtime.transcriptStatus)) buckets=\(runtime.buckets.count) spikes=\(runtime.spikes.count)")
             if session.status == .failed { break }

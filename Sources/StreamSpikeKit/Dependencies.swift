@@ -73,6 +73,23 @@ public enum Dependency: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// One command per line, with the Homebrew packages joined into one.
+    /// The tools a stream needs for this mode. A missing one limits the run: chat from one source may still work.
+    public static func needed(for stream: StreamURL, mode: StreamMode) -> [Dependency] {
+        var tools: [Dependency] = [.ytDlp]
+        switch (stream.platform, mode) {
+        case (.youtube, .vod): tools += [.chatDownloader, .youtubeTranscriptAPI, .ffmpeg, .whisperCLI, .whisperModel]
+        case (.twitch, .vod): tools += [.chatDownloader, .ffmpeg, .whisperCLI, .whisperModel]
+        case (.youtube, .live): tools += [.chatDownloader, .ffmpeg, .whisperCLI, .whisperModel]
+        case (.twitch, .live): tools += [.ffmpeg, .whisperCLI, .whisperModel]
+        }
+        return tools
+    }
+
+    /// Where Homebrew lives, or nil when it is not installed.
+    public static var homebrewPath: String? {
+        ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
     public static func installCommand(for missing: [Dependency]) -> String {
         var lines: [String] = []
         let brew = missing.filter { $0.installCommand.hasPrefix("brew install ") }

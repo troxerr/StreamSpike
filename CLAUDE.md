@@ -14,7 +14,8 @@ said. It runs on this Mac only, with a local SwiftData database and no server.
   20 s ffmpeg chunks. Kick is not supported: its recordings have no chat replay these tools can read, and its
   live chat now needs an authenticated realtime API.
   Live times count from `startedAt` (when monitoring began), so live links and exports carry no video time.
-- `SpikeDetector` buckets chat, computes a rolling Z-score, and merges neighbouring flagged buckets.
+- `SpikeDetector` buckets chat (`Accumulator` adds only new messages on a live run), computes a rolling Z-score on single and paired buckets against a baseline that caps earlier spikes, and merges neighbouring flagged buckets.
+  Live YouTube chat runs inside `ReconnectingChatSource` and live Whisper restarts ffmpeg itself, so a dropped connection does not end a run.
   `TranscriptPairing` attaches the T-30 s to T+15 s transcript window.
 - `ProcessRunner` runs every command line tool off the main thread and kills it when the task is cancelled.
 - `StreamSession` (SwiftData) stores chat, transcript, and spikes as compressed blobs (`SessionCodec`).

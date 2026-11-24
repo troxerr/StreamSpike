@@ -21,6 +21,12 @@ struct AddStreamSheet: View {
         return nil
     }
 
+    /// Tools this link needs that are not installed. The run still starts: another source may cover for one.
+    private var missingForThis: [Dependency] {
+        guard let parsed, problem == nil else { return [] }
+        return Dependency.needed(for: parsed, mode: mode).filter { model.settings.statuses[$0]?.isOK == false }
+    }
+
     private var canStart: Bool { parsed != nil && problem == nil }
 
     var body: some View {
@@ -63,6 +69,12 @@ struct AddStreamSheet: View {
             }
             .font(.callout)
 
+            if !missingForThis.isEmpty {
+                Label("This link needs \(missingForThis.map(\.title).joined(separator: ", ")). Parts of the run may not work.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
             DependencyBanner()
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 

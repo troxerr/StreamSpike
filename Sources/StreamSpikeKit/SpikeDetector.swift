@@ -172,7 +172,7 @@ public enum SpikeDetector {
         let floor = settings.messageFloor
         let z = scores.indices.map { i -> Double in
             let pairCount = i == 0 ? 0 : counts[i] + counts[i - 1]
-            return max(counts[i] >= floor ? single[i] : min(single[i], 0), pairCount >= floor ? pairedZ[i] : min(pairedZ[i], 0))
+            return max(counts[i] >= floor ? single[i] : min(single[i], 0), pairCount >= 2 * floor ? pairedZ[i] : min(pairedZ[i], 0))
         }
 
         let buckets = counts.indices.map {

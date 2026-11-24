@@ -433,3 +433,53 @@ struct AccumulatorTests {
         #expect(!acc.isValid(for: other))
     }
 }
+
+@Suite("Export formats")
+struct ExportFormatTests {
+    let settings = SpikeSettings()
+    let spikes = [
+        Spike(id: 60, time: 600, zScore: 4.2, messageCount: 40, peakPerSecond: 4, topEmotes: [EmoteCount(name: "KEKW", count: 9)],
+              runStart: 600, runEnd: 610, transcriptPreview: "wow"),
+        Spike(id: 12, time: 125, zScore: 3.1, messageCount: 20, peakPerSecond: 2, topEmotes: [],
+              runStart: 120, runEnd: 130, transcriptPreview: ""),
+    ]
+
+    @Test func clipListIsInTimeOrder() {
+        let lines = SpikeExport.clipList(spikes: spikes, settings: settings).split(separator: "\n")
+        #expect(lines.count == 2)
+        #expect(lines[0].hasPrefix("1:30 2:20"))
+        #expect(lines[1].contains("KEKW"))
+    }
+
+    @Test func chaptersStartAtZeroAndKeepOrder() {
+        let lines = SpikeExport.chapters(spikes: spikes, settings: settings).split(separator: "\n")
+        #expect(lines.first == "0:00 Start")
+        #expect(lines.count == 3)
+    }
+
+    @Test func markdownAndCSVKeepNonASCII() {
+        let stream = StreamURL.parse("youtu.be/dQw4w9WgXcQ")!
+        let transcript = [TranscriptSegment(start: 590, end: 600, text: "café, \"quoted\" 日本語")]
+        let rows = SpikeExport.rows(spikes: spikes, transcript: transcript, stream: stream, settings: settings)
+        #expect(SpikeExport.markdown(title: "T", rows: rows).contains("日本語"))
+        #expect(SpikeExport.csv(rows).contains("\"café, \"\"quoted\"\" 日本語\""))
+        #expect(SpikeExport.csv(rows).contains("600.0"))
+    }
+
+    @Test func liveRowsCarryNoVideoTime() {
+        let stream = StreamURL.parse("twitch.tv/streamer")!
+        let rows = SpikeExport.rows(spikes: spikes, transcript: [], stream: stream, settings: settings, timestamped: false)
+        #expect(rows.allSatisfy { $0.url == "https://www.twitch.tv/streamer" })
+    }
+}
+
+@Suite("Needed tools")
+struct NeededToolsTests {
+    @Test func liveTwitchNeedsNoChatTool() {
+        let twitch = StreamURL.parse("twitch.tv/streamer")!
+        #expect(!Dependency.needed(for: twitch, mode: .live).contains(.chatDownloader))
+        #expect(Dependency.needed(for: twitch, mode: .live).contains(.whisperModel))
+        let vod = StreamURL.parse("youtu.be/dQw4w9WgXcQ")!
+        #expect(Dependency.needed(for: vod, mode: .vod).contains(.chatDownloader))
+    }
+}

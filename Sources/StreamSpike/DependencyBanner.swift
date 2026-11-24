@@ -17,11 +17,14 @@ struct DependencyBanner: View {
                 VStack(alignment: .leading, spacing: Space.xs) {
                     Text("Missing: " + missing.map(\.title).joined(separator: ", "))
                         .font(.callout.weight(.semibold))
-                    Text("StreamSpike runs these tools to download chat and transcripts.")
+                    Text(Dependency.homebrewPath == nil && missing.contains { $0.installCommand.hasPrefix("brew ") }
+                         ? "Homebrew is not installed. Install it from brew.sh first, then run the install command."
+                         : "StreamSpike runs these tools to download chat and transcripts.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: Space.md)
+                Button("Check Again") { model.settings.refresh() }
                 Button("Open Settings") {
                     model.settingsTab = .dependencies
                     openSettings()

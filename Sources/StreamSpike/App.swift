@@ -43,10 +43,33 @@ struct StreamSpikeApp: App {
                     }
                 }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
+                Button("Open in Browser") {
+                    if let session = model.selectedSession, let runtime = model.existingRuntime(session.uuid) {
+                        model.openInBrowser(session, runtime)
+                    }
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                Divider()
+                Button("Next Spike") {
+                    if let session = model.selectedSession, let runtime = model.existingRuntime(session.uuid) {
+                        model.stepSpike(runtime, forward: true)
+                    }
+                }
+                .keyboardShortcut("]")
+                Button("Previous Spike") {
+                    if let session = model.selectedSession, let runtime = model.existingRuntime(session.uuid) {
+                        model.stepSpike(runtime, forward: false)
+                    }
+                }
+                .keyboardShortcut("[")
+                Divider()
                 Button("Export Spikes as JSON…") { export(.json) }
                     .keyboardShortcut("j", modifiers: [.command, .shift])
                 Button("Export Spikes as CSV…") { export(.csv) }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
+                Button("Export Spikes as Markdown…") { export(.markdown) }
+                Button("Export Clip List…") { export(.clips) }
+                Button("Export YouTube Chapters…") { export(.chapters) }
                 Divider()
                 Button("Download Again or Monitor Again") {
                     if let session = model.selectedSession { model.restart(session) }

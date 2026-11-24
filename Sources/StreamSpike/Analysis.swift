@@ -5,10 +5,33 @@ import UniformTypeIdentifiers
 import StreamSpikeKit
 
 enum ExportFormat {
-    case json, csv
+    case json, csv, markdown, clips, chapters
 
-    var fileExtension: String { self == .json ? "json" : "csv" }
-    var contentType: UTType { self == .json ? .json : .commaSeparatedText }
+    var fileExtension: String {
+        switch self {
+        case .json: "json"
+        case .csv: "csv"
+        case .markdown: "md"
+        case .clips, .chapters: "txt"
+        }
+    }
+
+    var contentType: UTType {
+        switch self {
+        case .json: .json
+        case .csv: .commaSeparatedText
+        case .markdown: UTType(filenameExtension: "md") ?? .plainText
+        case .clips, .chapters: .plainText
+        }
+    }
+
+    var nameSuffix: String {
+        switch self {
+        case .json, .csv, .markdown: "spikes"
+        case .clips: "clips"
+        case .chapters: "chapters"
+        }
+    }
 }
 
 extension AppModel {
@@ -281,6 +304,22 @@ extension AppModel {
         NSPasteboard.general.setString(link, forType: .string)
     }
 
+    /// Opens the selected spike's timestamped link, or the stream, in the default browser.
+    func openInBrowser(_ session: StreamSession, _ runtime: SessionRuntime) {
+        guard let link = timestampLink(session, runtime), let url = URL(string: link) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Selects the spike after (or before) the selected one in time order.
+    func stepSpike(_ runtime: SessionRuntime, forward: Bool) {
+        let ordered = runtime.spikes.sorted { $0.time < $1.time }
+        guard !ordered.isEmpty else { return }
+        let current = runtime.selectedSpike.flatMap { selected in ordered.firstIndex { $0.id == selected.id } }
+        let next: Int
+        if let current { next = min(ordered.count - 1, max(0, current + (forward ? 1 : -1))) } else { next = forward ? 0 : ordered.count - 1 }
+        runtime.selectedSpikeID = ordered[next].id
+    }
+
     func exportSpikes(_ session: StreamSession, _ runtime: SessionRuntime, as format: ExportFormat) {
         guard let stream = session.stream, !runtime.spikes.isEmpty else {
             alertMessage = "There are no spikes to export yet."
@@ -294,6 +333,9 @@ extension AppModel {
             switch format {
             case .json: data = try SpikeExport.json(title: session.title, stream: stream, rows: rows, settings: detection)
             case .csv: data = Data(SpikeExport.csv(rows).utf8)
+            case .markdown: data = Data(SpikeExport.markdown(title: session.title, rows: rows).utf8)
+            case .clips: data = Data(SpikeExport.clipList(spikes: runtime.spikes, settings: detection).utf8)
+            case .chapters: data = Data(SpikeExport.chapters(spikes: runtime.spikes, settings: detection).utf8)
             }
         } catch {
             alertMessage = "Could not build the export: \(error.localizedDescription)"
@@ -302,7 +344,7 @@ extension AppModel {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [format.contentType]
         let safeTitle = session.title.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
-        panel.nameFieldStringValue = "\(safeTitle.prefix(60)) spikes.\(format.fileExtension)"
+        panel.nameFieldStringValue = "\(safeTitle.prefix(60)) \(format.nameSuffix).\(format.fileExtension)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try data.write(to: url)

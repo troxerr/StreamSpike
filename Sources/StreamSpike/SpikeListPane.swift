@@ -4,6 +4,23 @@ import StreamSpikeKit
 /// Spikes, strongest first. Selecting one highlights it on the chart and moves the viewer to it.
 struct SpikeListPane: View {
     let runtime: SessionRuntime
+    @State private var query = ""
+    @State private var byTime = false
+
+    /// Rank is always by Z-score, so a row keeps its number whatever the sort or the search.
+    private var rows: [(rank: Int, spike: Spike)] {
+        var ranked = runtime.spikes.enumerated().map { (rank: $0.offset + 1, spike: $0.element) }
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        if !needle.isEmpty {
+            ranked = ranked.filter { row in
+                row.spike.transcriptPreview.lowercased().contains(needle)
+                    || row.spike.topEmotes.contains { $0.name.lowercased().contains(needle) }
+                    || Timecode.string(row.spike.time).contains(needle)
+            }
+        }
+        if byTime { ranked.sort { $0.spike.time < $1.spike.time } }
+        return ranked
+    }
 
     var body: some View {
         @Bindable var runtime = runtime
@@ -12,24 +29,35 @@ struct SpikeListPane: View {
                 Text("Spikes").font(.headline)
                 Text("\(runtime.spikes.count)").font(.callout).foregroundStyle(.secondary)
                 Spacer()
-                Text("ranked by Z-score").font(.caption).foregroundStyle(.secondary)
+                Picker("Sort", selection: $byTime) {
+                    Text("Z-score").tag(false)
+                    Text("Time").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+                .help("Sort spikes by Z-score or by time")
             }
             .padding(.horizontal, Space.lg)
             .padding(.vertical, Space.md)
             Divider()
             ScrollViewReader { proxy in
                 List(selection: $runtime.selectedSpikeID) {
-                    ForEach(Array(runtime.spikes.enumerated()), id: \.element.id) { index, spike in
-                        SpikeRow(rank: index + 1, spike: spike)
-                            .tag(spike.id)
+                    ForEach(rows, id: \.spike.id) { row in
+                        SpikeRow(rank: row.rank, spike: row.spike)
+                            .tag(row.spike.id)
                     }
                 }
                 .onChange(of: runtime.selectedSpikeID) { _, id in
                     guard let id else { return }
                     withAnimation { proxy.scrollTo(id, anchor: .center) }
                 }
+                .searchable(text: $query, placement: .toolbar, prompt: "Search spikes")
                 .overlay {
-                    if runtime.spikes.isEmpty {
+                    if !runtime.spikes.isEmpty && rows.isEmpty {
+                        ContentUnavailableView.search(text: query)
+                    } else if runtime.spikes.isEmpty {
                         ContentUnavailableView(
                             runtime.isRunning ? "Looking for spikes" : "No spikes",
                             systemImage: "waveform.path.ecg",

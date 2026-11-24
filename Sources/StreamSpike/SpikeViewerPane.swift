@@ -63,9 +63,16 @@ struct SpikeViewerPane: View {
                 Button("Copy Link", systemImage: "link") { model.copyLink(session, runtime) }
                     .help(linkHelp)
                     .disabled(session.stream == nil)
+                Button("Open", systemImage: "safari") { model.openInBrowser(session, runtime) }
+                    .help("Open the stream in the browser (Shift-Command-O)")
+                    .disabled(session.stream == nil)
                 Menu("Export", systemImage: "square.and.arrow.up") {
                     Button("Spikes as JSON…") { model.exportSpikes(session, runtime, as: .json) }
                     Button("Spikes as CSV…") { model.exportSpikes(session, runtime, as: .csv) }
+                    Button("Spikes as Markdown…") { model.exportSpikes(session, runtime, as: .markdown) }
+                    Divider()
+                    Button("Clip List…") { model.exportSpikes(session, runtime, as: .clips) }
+                    Button("YouTube Chapters…") { model.exportSpikes(session, runtime, as: .chapters) }
                 }
                 .disabled(runtime.spikes.isEmpty)
                 .menuIndicator(.hidden)

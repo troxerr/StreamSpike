@@ -1,0 +1,7 @@
+https://x.com/example_streamer/status/1800000000000000001
+by @example_streamer
+Spent 3 hours scrubbing last night's VOD looking for clips. There has to be a better way.
+---
+https://x.com/example_dev/status/1800000000000000002
+by @example_dev
+Anyone know a clean FFmpeg recipe for turning 16:9 gameplay into 9:16 without cropping out the action?

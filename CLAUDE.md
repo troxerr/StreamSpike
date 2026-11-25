@@ -23,6 +23,9 @@ said. It runs on this Mac only, with a local SwiftData database and no server.
 - `StreamSession` (SwiftData) stores chat, transcript, and spikes as compressed blobs (`SessionCodec`).
   A live run autosaves every 30 s: only the new chat, as a `ChatChunk`. The final save, and recovery at launch after a crash, fold the chunks back into `chatData`.
 - `AppModel` (Analysis.swift) runs the pipeline; `SessionRuntime` is what the screen reads while it fills.
+- `ModelDownloader` (Kit) downloads the Whisper model, checks its size and ggml header, and only then replaces the file.
+  `ModelDownloadState` drives the Download Model button in Settings > Dependencies and in the missing-tools banner.
+  `APP_SNAPSHOT_NO_MODEL=1 tools/snap.sh` shows the screens with the model missing.
 - Tool paths and detection settings: `AppSettings`, edited in Settings (Command-Comma).
 - `SELFTEST_ONLINE=<vod link> tools/selftest.sh` also runs the real installed tools on the start of one VOD.
 

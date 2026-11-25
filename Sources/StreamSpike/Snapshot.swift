@@ -58,6 +58,8 @@ enum Snapshot {
             NSApp.terminate(nil)
             return
         }
+        // APP_SNAPSHOT_NO_MODEL=1 points the Whisper model at a file that is not there, to see the download button.
+        if env["APP_SNAPSHOT_NO_MODEL"] == "1" { AppSettings.shared.setPath("/tmp/StreamSpike-no-model/ggml-base.en.bin", for: .whisperModel) }
         let only = env["APP_SNAPSHOT_PAGES"].map { Set($0.split(separator: ",").map(String.init)) }
         Task {
             // A sleeping display gives screencapture nothing. Declaring user

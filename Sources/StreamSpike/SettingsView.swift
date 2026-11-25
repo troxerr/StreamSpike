@@ -69,6 +69,7 @@ struct DependencySettings: View {
 struct DependencyRow: View {
     let dependency: Dependency
     @Bindable private var settings = AppSettings.shared
+    @Bindable private var download = ModelDownloadState.shared
     @State private var text = ""
 
     var body: some View {
@@ -96,6 +97,17 @@ struct DependencyRow: View {
             Text(dependency.purpose)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if dependency == .whisperModel, !status.isOK || download.phase != .idle {
+                HStack(spacing: Space.md) {
+                    ModelDownloadButton()
+                    if let failure = download.failureText {
+                        Text(failure).font(.caption).foregroundStyle(.red)
+                    } else if !download.isDownloading {
+                        Text("About 150 MB, saved to the path above.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .controlSize(.small)
+            }
         }
         .padding(.vertical, Space.xs)
         .onAppear { text = settings.displayPath(for: dependency) }

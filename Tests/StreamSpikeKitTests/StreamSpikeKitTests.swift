@@ -542,3 +542,74 @@ struct SpikeAnnouncerTests {
         #expect(announcer.next(spikes: spikes, elapsed: 300, bucketSeconds: 10)?.runStart == 200)
     }
 }
+
+@Suite("Model download")
+struct ModelDownloaderTests {
+    func folder() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("model-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    func source(in dir: URL, head: String, bytes: Int) throws -> URL {
+        let file = dir.appendingPathComponent("source.bin")
+        try (Data(head.utf8) + Data(repeating: 7, count: bytes)).write(to: file)
+        return file
+    }
+
+    @Test func savesAValidModelAndReportsProgress() async throws {
+        let dir = try folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let from = try source(in: dir, head: "lmgg", bytes: 200_000)
+        let target = dir.appendingPathComponent("models/ggml-test.bin").path
+        let seen = Seen()
+        try await ModelDownloader.download(from: from, to: target, minimumBytes: 1000) { seen.add($0) }
+        #expect(FileManager.default.fileExists(atPath: target))
+        #expect(seen.values.last == 1)
+    }
+
+    @Test func replacesAnOlderFile() async throws {
+        let dir = try folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let from = try source(in: dir, head: "lmgg", bytes: 5000)
+        let target = dir.appendingPathComponent("old.bin")
+        try Data("old".utf8).write(to: target)
+        try await ModelDownloader.download(from: from, to: target.path, minimumBytes: 1000)
+        #expect((try Data(contentsOf: target)).count == 5004)
+    }
+
+    @Test func refusesAFileThatIsNotAModel() async throws {
+        let dir = try folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let from = try source(in: dir, head: "<htm", bytes: 5000)
+        let target = dir.appendingPathComponent("model.bin")
+        try Data("keep".utf8).write(to: target)
+        await #expect(throws: ToolError.self) { try await ModelDownloader.download(from: from, to: target.path, minimumBytes: 1000) }
+        #expect(try String(contentsOf: target, encoding: .utf8) == "keep")
+    }
+
+    @Test func refusesATruncatedFile() async throws {
+        let dir = try folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let from = try source(in: dir, head: "lmgg", bytes: 10)
+        let target = dir.appendingPathComponent("model.bin").path
+        await #expect(throws: ToolError.self) { try await ModelDownloader.download(from: from, to: target, minimumBytes: 1000) }
+        #expect(!FileManager.default.fileExists(atPath: target))
+    }
+
+    @Test func aMissingSourceFails() async throws {
+        let dir = try folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let target = dir.appendingPathComponent("model.bin").path
+        await #expect(throws: ToolError.self) {
+            try await ModelDownloader.download(from: dir.appendingPathComponent("nothing.bin"), to: target, minimumBytes: 1)
+        }
+    }
+}
+
+final class Seen: @unchecked Sendable {
+    private let lock = NSLock()
+    private var all: [Double] = []
+    func add(_ value: Double) { lock.withLock { all.append(value) } }
+    var values: [Double] { lock.withLock { all } }
+}

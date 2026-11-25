@@ -7,6 +7,7 @@ struct DependencyBanner: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
     @State private var copied = false
+    @Bindable private var download = ModelDownloadState.shared
 
     var body: some View {
         let missing = model.settings.missing
@@ -17,13 +18,14 @@ struct DependencyBanner: View {
                 VStack(alignment: .leading, spacing: Space.xs) {
                     Text("Missing: " + missing.map(\.title).joined(separator: ", "))
                         .font(.callout.weight(.semibold))
-                    Text(Dependency.homebrewPath == nil && missing.contains { $0.installCommand.hasPrefix("brew ") }
+                    Text(download.failureText ?? (Dependency.homebrewPath == nil && missing.contains { $0.installCommand.hasPrefix("brew ") }
                          ? "Homebrew is not installed. Install it from brew.sh first, then run the install command."
-                         : "StreamSpike runs these tools to download chat and transcripts.")
+                         : "StreamSpike runs these tools to download chat and transcripts."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: Space.md)
+                if missing.contains(.whisperModel) { ModelDownloadButton() }
                 Button("Check Again") { model.settings.refresh() }
                 Button("Open Settings") {
                     model.settingsTab = .dependencies
@@ -45,6 +47,32 @@ struct DependencyBanner: View {
             .background(.orange.opacity(0.12))
             .overlay(alignment: .bottom) { Divider() }
             .accessibilityElement(children: .contain)
+        }
+    }
+}
+
+/// Downloads the Whisper model: a button, then a progress bar with Cancel, then the reason if it failed.
+struct ModelDownloadButton: View {
+    @Bindable private var download = ModelDownloadState.shared
+
+    var body: some View {
+        switch download.phase {
+        case .idle:
+            Button("Download Model", systemImage: "arrow.down.circle") { download.start() }
+        case .failed:
+            Button("Try Download Again", systemImage: "arrow.clockwise") { download.start() }
+        case .downloading(let fraction):
+            HStack(spacing: Space.sm) {
+                if let fraction {
+                    ProgressView(value: fraction).frame(width: 96)
+                    Text(fraction, format: .percent.precision(.fractionLength(0)))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Button("Cancel") { download.cancel() }
+            }
         }
     }
 }

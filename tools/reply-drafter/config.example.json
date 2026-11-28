@@ -1,0 +1,14 @@
+{
+  "me": {
+    "name": "Austin",
+    "handle": "@AST_Labs",
+    "bio": "an indie Mac and Windows developer who builds tools that read Twitch and YouTube chat"
+  },
+  "products": {
+    "ClipSpike": "watches Twitch chat while you stream and saves the moments chat reacts to as 9:16 vertical clips; Windows app, 3 free clips a week, $39 once",
+    "StreamSpike": "Mac app in development that finds chat spikes in a Twitch or YouTube VOD and shows what the streamer said at that moment"
+  },
+  "keywords": ["clip", "clipping", "highlight", "vod", "twitch", "stream", "chat", "shorts", "tiktok", "ffmpeg", "whisper"],
+  "daily_max": 10,
+  "model": "claude-opus-5-5"
+}
